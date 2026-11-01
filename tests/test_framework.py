@@ -50,9 +50,12 @@ def test_example_signals_carry_stop():
     s = SmaCrossExample.__new__(SmaCrossExample)
     df = s.populate_indicators(_df(), {})
     df["trend_ok_1d"] = 1
+    df["trend_down_1d"] = 1
     df = s.populate_entry_trend(df, {})
     sig = df[df["enter_long"] == 1]
     assert len(sig) > 0 and (sig["fw_stop"] < sig["close"]).all() and sig["fw_entry_cap"].notna().all()
+    sht = df[(df["enter_short"] == 1) & df["fw_stop"].notna()]              # v2.13：空单止损在上方、限价下限在下方（预热期 NaN 由框架拒绝）
+    assert len(sht) > 0 and (sht["fw_stop"] > sht["close"]).all() and (sht["fw_entry_cap"] < sht["close"]).all()
     assert s.take_profit_legs(None) == [(2.0, 0.5, "tp_2R")]
 
 
@@ -60,12 +63,17 @@ DATA = ROOT / "user_data" / "data" / "okx" / "futures"
 
 
 @pytest.mark.skipif(shutil.which("freqtrade") is None or not DATA.exists(), reason="需要 freqtrade 与本地 OKX 测试数据")
-@pytest.mark.parametrize("strategy,path,expect_trades", [("MyStrategy", None, False),
-                                                         ("SmaCrossExample", "examples/strategies", True)])
-def test_freqtrade_backtest_smoke(tmp_path, strategy, path, expect_trades):
-    cmd = ["freqtrade", "backtesting", "-c", "user_data/config-test-okx.json", "--strategy", strategy,
+@pytest.mark.parametrize("strategy,path,expect_trades,direction", [("MyStrategy", None, False, "both"),
+                                                                   ("SmaCrossExample", "examples/strategies", True, "both"),
+                                                                   ("SmaCrossExample", "examples/strategies", True, "long"),
+                                                                   ("SmaCrossExample", "examples/strategies", True, "short")])
+def test_freqtrade_backtest_smoke(tmp_path, strategy, path, expect_trades, direction):
+    cfg = json.loads((ROOT / "user_data" / "config-test-okx.json").read_text("utf-8"))
+    cfg["fw_trade_direction"] = direction                        # v2.13：方向由配置决定
+    (tmp_path / "cfg.json").write_text(json.dumps(cfg), "utf-8")
+    cmd = ["freqtrade", "backtesting", "-c", str(tmp_path / "cfg.json"), "--strategy", strategy,
            "--timerange", "20261005-20261026", "-p", "SOL/USDT:USDT", "BTC/USDT:USDT", "--export", "trades",
-           "--backtest-directory", str(tmp_path)]
+           "--backtest-directory", str(tmp_path), "--cache", "none"]       # 回测缓存不含框架基类：必须关掉
     if path:
         cmd += ["--strategy-path", path]
     if os.environ.get("S03_FT_EXTRA_CONFIG"):                       # 本机专属设置（如代理证书）放在仓库外
@@ -80,10 +88,23 @@ def test_freqtrade_backtest_smoke(tmp_path, strategy, path, expect_trades):
         return
     assert len(t) > 0
     init = t.groupby("trade_id").first() if "trade_id" in t else t
-    # v2.6：止损随订单绑定，按成交价检查；距离必须在 0.8%–3%（成交价更优时放宽到 0.8%）
-    stop_pct = (init["open_rate"] - init["stop_loss_abs"]) / init["open_rate"] * 100
+    short = init["is_short"].astype(bool)
+    if direction == "long":
+        assert not short.any()
+    elif direction == "short":
+        assert short.all()
+    else:
+        assert short.any() and (~short).any(), "测试区间里多空都应出现"
+    # 止损随订单绑定，按成交价检查；距离必须在 0.8%–3%（成交价更优时放宽到 0.8%）；多单止损在下方，空单在上方
+    sgn = short.map({True: 1.0, False: -1.0})
+    stop_pct = (init["stop_loss_abs"] - init["open_rate"]) / init["open_rate"] * 100 * sgn
     assert ((stop_pct >= 0.8 - 1e-6) & (stop_pct <= 3.0 + 1e-6)).all(), stop_pct.tolist()
-    assert (init["initial_stop_loss_abs"] < init["stop_loss_abs"]).all()   # initial 是兜底的 −99%，不是策略止损
+    assert ((init["initial_stop_loss_abs"] - init["stop_loss_abs"]) * sgn > 0).all()   # initial 是兜底的 99%，比策略止损更远
+    rr = init[init["exit_reason"] == "stop_loss"]                           # 止损离场约 −1R（含手续费、取整）
+    rr = rr[[not any(not o.get("ft_is_entry") and o.get("ft_order_side") != "stoploss" and o.get("ft_order_tag") == "tp_2R"
+                     for o in os_) for os_ in rr["orders"]]]                 # 分批止盈过的交易剩余仓位更小，另算
+    risk = (rr["stop_loss_abs"] - rr["open_rate"]).abs() * rr["amount"]
+    assert rr.empty or ((rr["profit_abs"] / risk) < -0.8).all(), (rr["profit_abs"] / risk).tolist()
     assert init["enter_tag"].str.startswith("fw|").all()                   # 计划随订单保存
     # 周期以策略为准（15m）：入场发生在 15 分钟 K 线的开盘时刻，说明配置没有把它改成 1m
     assert (pd.to_datetime(init["open_date"]).dt.minute % 15 == 0).all()

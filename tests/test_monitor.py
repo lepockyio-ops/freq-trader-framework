@@ -151,3 +151,24 @@ def test_status_read_failures_keep_timers_and_alert():
     eng3 = AlertEngine(AlertConfig())
     w = [a for t in range(0, 130, 5) for a in eng3.check_ft_status(False, float(t))]
     assert w and w[0].severity == "warning"
+
+
+def test_monitor_handles_short_positions():
+    """v2.13：空单持仓也要检查缺止损与接近止损；空单的入场单是 sell。"""
+    from alerts_core import AlertConfig, AlertEngine
+    from binance_monitor import partial_entries_from_ft
+
+    short = {"pair": "SOL/USDT:USDT", "is_open": True, "is_short": True, "open_rate": 100.0, "amount": 1.0,
+             "stop_loss_abs": 101.0, "orders": [{"ft_order_side": "sell", "is_open": False, "filled": 1.0}]}
+    pos = positions_from_ft([short])
+    assert len(pos) == 1 and pos[0].is_short and not pos[0].has_exchange_stop
+    eng = AlertEngine(AlertConfig())
+    st = eng._st("SOL")
+    st.last_price = 100.8                                         # 距离止损 0.2R（空单：价格涨向止损）
+    alerts = eng.check_positions(pos, 1000.0)
+    near = [a for a in alerts if a.rule == "near_stop"]
+    assert near and abs(near[0].value - 0.2) < 1e-9
+    st.last_price = 99.0                                          # 价格下跌：远离止损
+    assert not [a for a in eng.check_positions(pos, 1001.0) if a.rule == "near_stop"]
+    stuck = {**short, "amount": 0.0, "orders": [{"ft_order_side": "sell", "is_open": True, "filled": 0.4}]}
+    assert [(e.coin, e.filled) for e in partial_entries_from_ft([stuck])] == [("SOL", 0.4)]

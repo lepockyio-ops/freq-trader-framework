@@ -57,8 +57,9 @@ class FakeTrade:
         self.cd[k] = v
 
 
-def strat(params=None, open_trades=(), signal_rows=None, closed_trades=()):
+def strat(params=None, open_trades=(), signal_rows=None, closed_trades=(), config=None):
     s = S.__new__(S)
+    s.config = dict(config or {})
     s.framework_params = {"event_file_required": False, **(params or {})}
     df = pd.DataFrame(signal_rows or [])
     s.dp = SimpleNamespace(get_analyzed_dataframe=lambda p, tf: (df, None), get_pair_dataframe=lambda p, tf: pd.DataFrame(),
@@ -284,7 +285,7 @@ def test_take_profit_gives_up_after_max_attempts():
 _TID = iter(range(1000, 100000))
 
 
-def real_trade(state, qty=10.0, enter_tag=None, stop_px=None, pair="ETH/USDT:USDT", invalid=None, price=100.0):
+def real_trade(state, qty=10.0, enter_tag=None, stop_px=None, pair="ETH/USDT:USDT", invalid=None, price=100.0, is_short=False):
     """用 freqtrade 自己的 LocalTrade / Order 构造交易（v2.6 的测试用了自写假对象，漏掉了挂单 amount = 0 的真实形态）。
     state：pending（挂单未成交）/ partial（部分成交、单子仍挂着）/ filled（入场已完成）。"""
     from freqtrade.persistence import LocalTrade, Order
@@ -294,10 +295,12 @@ def real_trade(state, qty=10.0, enter_tag=None, stop_px=None, pair="ETH/USDT:USD
     filled = {"pending": 0.0, "partial": qty * 0.4, "filled": qty}[state]
     t = LocalTrade(id=next(_TID), pair=pair, stake_amount=qty * price / 10, amount=qty if state == "filled" else 0.0,
                    amount_requested=qty, open_rate=price, open_rate_requested=price, fee_open=0.0005, fee_close=0.0005,
-                   open_date=NOW, is_open=True, enter_tag=enter_tag, exchange="binance", leverage=10, trading_mode="futures")
-    t.orders.append(Order(ft_order_side="buy", ft_pair=pair, ft_is_open=state != "filled", ft_amount=qty, ft_price=price,
+                   open_date=NOW, is_open=True, enter_tag=enter_tag, exchange="binance", leverage=10, trading_mode="futures",
+                   is_short=is_short)
+    side = "sell" if is_short else "buy"
+    t.orders.append(Order(ft_order_side=side, ft_pair=pair, ft_is_open=state != "filled", ft_amount=qty, ft_price=price,
                           order_id=f"o{t.id}", status="closed" if state == "filled" else "open", symbol=pair,
-                          order_type="limit", side="buy", price=price, average=price, amount=qty, filled=filled,
+                          order_type="limit", side=side, price=price, average=price, amount=qty, filled=filled,
                           remaining=qty - filled, cost=filled * price, order_date=NOW))
     if stop_px is not None:
         t.set_custom_data("stop_px", stop_px)
@@ -573,3 +576,131 @@ def test_backtest_writes_initial_risk_records(tmp_path, monkeypatch):
     s.dp.runmode = SimpleNamespace(value="dry_run")                               # 实盘 / dry-run 不写
     s._bind_stop(real_trade("filled", qty=amount, enter_tag=tag(96.0)))
     assert len(log.read_text().splitlines()) == 2
+
+
+
+# ------------------------------------------------------------------ v2.13：多空与方向设置
+def test_guarded_stop_short_side():
+    fw = {**F.FW_DEFAULTS}
+    assert F.guarded_stop(100.0, 101.0, fw, True) == 101.0                     # 空单止损在上方
+    assert F.guarded_stop(100.0, 99.0, fw, True) is None                       # 空单止损在下方：不合规
+    assert F.guarded_stop(100.0, 104.0, fw, True) is None                      # 超过 3%
+    assert F.guarded_stop(100.0, 100.5, fw, True) is None                      # 太近、skip 模式
+    assert abs(F.guarded_stop(100.0, 100.5, {**fw, "stop_min_mode": "floor"}, True) - 100.8) < 1e-9
+    assert F.guarded_stop(100.0, 101.0, fw) is None                            # 多单止损在上方：不合规
+
+
+def short_sized(s, rate, stop):
+    lev = s.leverage("BTC/USDT:USDT", NOW, rate, 10, 75, tag(stop), "short")
+    stake = s.custom_stake_amount("BTC/USDT:USDT", NOW, rate, 0, 0, 1e9, lev, tag(stop), "short")
+    return stake * lev / rate, lev
+
+
+def test_short_sizing_leverage_and_entry_price_mirror_long():
+    s = strat()
+    amt_s, lev_s = short_sized(s, 100.0, 101.0)
+    amt_l, lev_l = sized_amount(s, 100.0, 99.0)
+    assert abs(amt_s - amt_l) < 1e-9 and lev_s == lev_l                       # 同样 1% 止损：同样的仓位与杠杆
+    assert amt_s * 1.0 <= EQUITY * 0.005 + 1e-9
+    assert s.custom_stake_amount("BTC/USDT:USDT", NOW, 100.0, 100, 0, 1e9, 10, tag(99.0), "short") == 0   # 空单止损在下方
+    t = tag(101.0, cap=99.9)                                                   # 空单的 fw_entry_cap 是限价下限
+    assert s.custom_entry_price("BTC/USDT:USDT", None, NOW, 99.5, t, "short") == 99.9
+    assert s.custom_entry_price("BTC/USDT:USDT", None, NOW, 100.2, t, "short") == 100.2
+
+
+def test_short_confirm_bind_and_stop_handling():
+    s = strat()
+    amt, _ = short_sized(s, 100.0, 101.0)
+    assert s.confirm_trade_entry("BTC/USDT:USDT", "limit", amt, 100.0, "GTC", NOW, tag(101.0), "short") is True
+    assert s.confirm_trade_entry("BTC/USDT:USDT", "limit", amt, 101.5, "GTC", NOW, tag(101.0), "short") is False  # 下单价高于止损
+    t = real_trade("filled", qty=amt, enter_tag=tag(101.0), is_short=True)
+    assert s._bind_stop(t) == 101.0 and abs(t.get_custom_data("fw_init_risk") - amt * 1.0) < 1e-9
+    assert s._open_risk([t]) == amt * 1.0
+    sl = s.custom_stoploss(t.pair, t, NOW, 100.0, 0.0, False)
+    assert sl is not None and abs(sl - 0.01 * 10) < 1e-9                      # 1% × 10 倍杠杆
+    better = real_trade("filled", qty=amt, enter_tag=tag(101.0), is_short=True, price=100.5)   # 空单成交价更高 = 更优
+    better.open_rate_requested = 100.0
+    sp = s._bind_stop(better)
+    assert sp is not None and (sp - 100.5) / 100.5 * 100 >= 0.8 and better.get_custom_data("stop_widened")
+    gap = real_trade("filled", qty=amt, enter_tag=tag(101.0), is_short=True, price=101.5)      # 跳空成交在止损之上
+    gap.open_rate_requested = 100.0
+    assert s._bind_stop(gap) is None and gap.get_custom_data("fw_invalid") == "stop_not_above_fill"
+
+
+@pytest.mark.parametrize("engine_stop,rate,expect", [
+    (109.9, 102.0, "fw_stop_crossed"),            # 空单：价格涨过止损，引擎还停在上方很远的兜底价
+    (101.0, 102.0, None),                         # 引擎已采用止损
+    (109.9, 100.5, None),                         # 还没到止损
+])
+def test_short_stop_crossed(engine_stop, rate, expect):
+    s = strat()
+    amt, _ = short_sized(s, 100.0, 101.0)
+    t = real_trade("filled", qty=amt, enter_tag=tag(101.0), is_short=True)
+    t.stop_loss = engine_stop
+    assert s._bind_stop(t) == 101.0
+    if rate >= 101.0:
+        assert s.custom_stoploss(t.pair, t, NOW, rate, -0.02, False) is None
+    assert s.custom_exit(t.pair, t, NOW, rate, -0.02) == expect
+
+
+def test_short_take_profit_triggers_below_entry():
+    s = strat()
+    S.take_profit_legs = lambda self, tr: [(2.0, 0.5, "tp_2R")]
+    try:
+        amt, _ = short_sized(s, 100.0, 101.0)
+        t = real_trade("filled", qty=amt, enter_tag=tag(101.0), is_short=True)
+        args = (0, 0, 1e9, 98.0, 98.0, 0.0, 0.0)
+        assert s.adjust_trade_position(t, NOW, 98.5, 0.0, *args[1:]) is None           # 1.5R：还没到
+        out = s.adjust_trade_position(t, NOW, 97.9, 0.0, *args[1:])                     # 2.1R：平一半
+        assert out is not None and out[1] == "tp_2R" and abs(out[0] + t.stake_amount * 0.5) < 1e-6
+    finally:
+        S.take_profit_legs = F.FrameworkStrategy.take_profit_legs
+
+
+def test_correlation_is_direction_aware():
+    d1 = pd.DataFrame({"date": pd.date_range("2026-09-01", periods=40, freq="D", tz="UTC"),
+                       "close": [100 * 1.01 ** i * (1 + 0.02 * (i % 2)) for i in range(40)]})
+    held_long = real_trade("filled", enter_tag=tag(99.0), stop_px=99.0, pair="ETH/USDT:USDT")
+    s = strat(open_trades=[held_long])
+    s.dp = SimpleNamespace(get_pair_dataframe=lambda p, tf: d1, runmode=SimpleNamespace(value="dry_run"))
+    assert s._corr_ok("BTC/USDT:USDT", [held_long], is_short=False) is False   # 同向、相关 = 1：同一笔风险
+    assert s._corr_ok("BTC/USDT:USDT", [held_long], is_short=True) is True     # 反向：对冲，不拒绝（风险仍相加）
+
+
+@pytest.mark.parametrize("config,side,pair,ok", [
+    ({}, "short", "BTC/USDT:USDT", True),                                                   # 默认 both
+    ({"fw_trade_direction": "long"}, "short", "BTC/USDT:USDT", False),
+    ({"fw_trade_direction": "long"}, "long", "BTC/USDT:USDT", True),
+    ({"fw_trade_direction": "short"}, "long", "BTC/USDT:USDT", False),
+    ({"fw_trade_direction": "both", "fw_pair_directions": {"HYPE/USDT:USDT": "long"}}, "short", "HYPE/USDT:USDT", False),
+    ({"fw_trade_direction": "both", "fw_pair_directions": {"HYPE/USDT:USDT": "long"}}, "short", "BTC/USDT:USDT", True),
+    ({"fw_trade_direction": "sideways"}, "long", "BTC/USDT:USDT", False),                   # 无效设置：拒绝（出错即拒绝）
+])
+def test_direction_setting_gates_entries(config, side, pair, ok):
+    s = strat(config=config)
+    stop = 101.0 if side == "short" else 99.0
+    assert s.confirm_trade_entry(pair, "limit", 1.0, 100.0, "GTC", NOW, tag(stop), side) is ok
+
+
+def test_direction_setting_clears_disallowed_signals_and_is_validated_at_start():
+    df = pd.DataFrame({"date": pd.date_range(NOW, periods=3, freq="15min"), "close": [100.0] * 3,
+                       "enter_long": [1, 0, 0], "enter_short": [0, 1, 0], "fw_stop": [99.0, 101.0, None]})
+    out = strat(config={"fw_trade_direction": "long"}).advise_entry(df.copy(), {"pair": "BTC/USDT:USDT"})
+    assert out["enter_long"].tolist() == [1, 0, 0] and out["enter_short"].tolist() == [0, 0, 0]
+    out = strat(config={"fw_trade_direction": "both"}).advise_entry(df.copy(), {"pair": "BTC/USDT:USDT"})
+    assert out["enter_short"].tolist() == [0, 1, 0] and F.decode_plan(out["enter_tag"][1])["stop"] == 101.0
+    with pytest.raises(ValueError, match="fw_trade_direction"):
+        strat(config={"fw_pair_directions": {"BTC/USDT:USDT": "up"}}).bot_start()
+    strat(config={"fw_trade_direction": "short"}).bot_start()
+    assert F.FrameworkStrategy.can_short is True
+
+
+
+def test_delay1_shifts_short_signals_too(monkeypatch):
+    monkeypatch.setenv("S03_RESEARCH_OVERRIDES", json.dumps({"research_entry_delay_bars": 1}))
+    s = strat()
+    s.dp.runmode = SimpleNamespace(value="backtest")
+    df = pd.DataFrame({"date": pd.date_range(NOW, periods=3, freq="15min"), "close": [100.0] * 3,
+                       "enter_long": [0, 0, 0], "enter_short": [1, 0, 0], "fw_stop": [101.0, None, None]})
+    out = s.advise_entry(df, {"pair": "BTC/USDT:USDT"})
+    assert out["enter_short"].tolist() == [0, 1, 0] and F.decode_plan(out["enter_tag"][1])["stop"] == 101.0

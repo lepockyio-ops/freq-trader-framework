@@ -114,10 +114,10 @@ class FtClient:
 
 
 def positions_from_ft(trades: list[dict], require_exchange_stop: bool = True) -> list[PositionView]:
-    """把 freqtrade /status 的未平仓交易转成只读持仓视图（只做多）。"""
+    """把 freqtrade /status 的未平仓交易转成只读持仓视图（多单与空单，v2.13）。"""
     out = []
     for t in trades:
-        if not t.get("is_open") or t.get("is_short"):
+        if not t.get("is_open"):
             continue
         if t.get("amount") is not None and float(t.get("amount") or 0) <= 0:
             continue                                    # 入场单还挂着、没有持仓：不是“缺止损”（v2.9，避免普通挂单误报）
@@ -129,18 +129,19 @@ def positions_from_ft(trades: list[dict], require_exchange_stop: bool = True) ->
         has_stop = any(o.get("ft_order_side") == "stoploss" and o.get("is_open") for o in t.get("orders") or [])
         ts = (t.get("open_fill_timestamp") or t.get("open_timestamp") or time.time() * 1000) / 1000
         out.append(PositionView(coin_of(t["pair"]), float(entry), float(init_stop), float(cur_stop),
-                                has_stop or not require_exchange_stop, ts))
+                                has_stop or not require_exchange_stop, ts, bool(t.get("is_short"))))
     return out
 
 
 def partial_entries_from_ft(trades: list[dict]) -> list[PartialEntryView]:
-    """有部分成交、仍挂着的入场单（只做多：入场方向 buy）。"""
+    """有部分成交、仍挂着的入场单（多单入场方向 buy，空单 sell；v2.13）。"""
     out = []
     for t in trades:
-        if not t.get("is_open") or t.get("is_short"):
+        if not t.get("is_open"):
             continue
+        side = "sell" if t.get("is_short") else "buy"
         for o in t.get("orders") or []:
-            if o.get("ft_order_side") == "buy" and o.get("is_open") and float(o.get("filled") or 0) > 0:
+            if o.get("ft_order_side") == side and o.get("is_open") and float(o.get("filled") or 0) > 0:
                 ts = (o.get("order_timestamp") or time.time() * 1000) / 1000
                 out.append(PartialEntryView(coin_of(t["pair"]), float(o.get("filled") or 0), ts))
     return out

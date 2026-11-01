@@ -334,7 +334,7 @@ def trades_frame(jid: str, trades, records: dict | None = None, risk_params: dic
     import pandas as pd
 
     base, year, variant = parse_job(jid)
-    cols = ["job", "coin", "year", "variant", "entry_time", "time", "R", "pnl", "risk", "risk_source"]
+    cols = ["job", "coin", "year", "variant", "entry_time", "time", "R", "pnl", "risk", "risk_source", "is_short"]
     if trades is None or len(trades) == 0:
         return pd.DataFrame(columns=cols)
     rows = [_trade_dict(r) for _, r in trades.iterrows()]
@@ -342,7 +342,8 @@ def trades_frame(jid: str, trades, records: dict | None = None, risk_params: dic
     out = pd.DataFrame({"job": jid, "coin": base, "year": year, "variant": variant,
                         "entry_time": trades["open_date"].values, "time": trades["close_date"].values,
                         "R": [float(r["profit_abs"]) / rk if rk else None for r, (rk, _) in zip(rows, risk)],
-                        "pnl": trades["profit_abs"].values, "risk": [rk for rk, _ in risk], "risk_source": [s_ for _, s_ in risk]})
+                        "pnl": trades["profit_abs"].values, "risk": [rk for rk, _ in risk], "risk_source": [s_ for _, s_ in risk],
+                        "is_short": [bool(r.get("is_short")) for r in rows]})
     return out[cols]
 
 
@@ -541,7 +542,8 @@ def _portfolio_body(res: dict, variant: str, timerange: str, fp: dict | None, re
                            "R": [float(r["profit_abs"]) / rk if rk else None for r, (rk, _) in zip(rows, risk)],
                            "pnl": t["profit_abs"].values, "exit_reason": t["exit_reason"].values,
                            "notional": [a * float(r["open_rate"]) for a, r in zip(ent_amt, rows)],
-                           "risk": [rk for rk, _ in risk], "risk_source": [src for _, src in risk]})
+                           "risk": [rk for rk, _ in risk], "risk_source": [src for _, src in risk],
+                           "is_short": [bool(r.get("is_short")) for r in rows]})
         csv = rdir / "trades.csv"
         tf.to_csv(csv, index=False)
         res.update(n_trades=int(len(t)), profit_abs=round(float(t["profit_abs"].sum()), 4) if len(t) else 0.0,
@@ -549,6 +551,8 @@ def _portfolio_body(res: dict, variant: str, timerange: str, fp: dict | None, re
                    max_concurrent=_max_concurrent(t), trades_hash=trades_hash(trades),
                    **equity_stats(t["profit_abs"].tolist(), wallet),
                    exits=t["exit_reason"].value_counts().to_dict(),
+                   by_side={("short" if k else "long"): v for k, v in tf.groupby("is_short")["pnl"].agg(["count", "sum"]).round(4)
+                            .to_dict("index").items()},
                    risk_sources=tf["risk_source"].value_counts().to_dict(), risk_params=req.get("risk_params"),
                    n_r_unknown=int(tf["R"].isna().sum()), result_hash=result_hash(tf),
                    risk_log_sha256=hashlib.sha256(Path(info["risk_log"]).read_bytes()).hexdigest()

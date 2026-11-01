@@ -6,11 +6,11 @@ build-backend = "setuptools.build_meta"
 name = "s03ft"
 version = "2.1.0"
 description = "S-03 freqtrade 交易流程：给 OpenClaw agent 直接调用的命令行库（不构成投资建议）"
-requires-python = ">=3.11"
+requires-python = ">=3.12"                # freqtrade 2026.10 不再支持 3.11
 dependencies = ["requests>=2.31", "websocket-client>=1.7", "numpy>=1.26", "pandas>=2.2"]
 
 [project.optional-dependencies]
-trade = ["freqtrade==2026.9"]
+trade = ["freqtrade==2026.10"]
 test = ["pytest>=8", "hypothesis>=6.100"]
 
 [project.scripts]

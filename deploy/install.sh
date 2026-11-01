@@ -3,7 +3,7 @@
 #
 #   sudo bash deploy/install.sh [--openclaw-user openclaw] [--with-vibe-trading] [--with-news] [--with-blockbeats] [--prefix /tmp/fakeroot]
 #
-# 做的事：建用户与目录 → 安装 freqtrade 2026.9 与 s03ft → 生成配置与随机 token（只在文件不存在时）
+# 做的事：建用户与目录 → 安装 freqtrade 2026.10 与 s03ft → 生成配置与随机 token（只在文件不存在时）
 #        → 安装 systemd、sudoers、小工具 → 放置 4 个 OpenClaw agent 的工作区与技能 → enable 定时器 → 自检
 # 不做的事：不填交易所 API Key、不启动 freqtrade、不改 dry_run、不修改你的 OpenClaw 主配置。
 # --with-vibe-trading：另建 /opt/s03/vt-venv 安装 Vibe-Trading（研究前端找想法用，经 mcp-guard 白名单代理，只给 s03-research）。
@@ -55,7 +55,14 @@ rm -rf "$R/opt/s03/ft-s03.new" && mkdir -p "$R/opt/s03/ft-s03.new"
     --exclude='*.egg-info' -cf - . ) | tar -xf - -C "$R/opt/s03/ft-s03.new"
 rm -rf "$R/opt/s03/ft-s03" && mv "$R/opt/s03/ft-s03.new" "$R/opt/s03/ft-s03"
 if ! fake; then
-  [[ -x /opt/s03/venv/bin/python ]] || python3 -m venv /opt/s03/venv
+  # freqtrade 2026.10 需要 Python ≥ 3.12（不再支持 3.11）。可用 S03_PYTHON=python3.12 指定解释器。
+  PY="${S03_PYTHON:-python3}"
+  "$PY" -c 'import sys; sys.exit(0 if sys.version_info >= (3, 12) else 1)' \
+    || { echo "需要 Python ≥ 3.12（当前 $("$PY" -V 2>&1)）：安装 python3.12 后用 S03_PYTHON=python3.12 重跑" >&2; exit 1; }
+  if [[ -x /opt/s03/venv/bin/python ]] && ! /opt/s03/venv/bin/python -c 'import sys; sys.exit(0 if sys.version_info >= (3, 12) else 1)'; then
+    echo "/opt/s03/venv 是 Python < 3.12 建的：先备份后删除这个目录，再重跑 install.sh" >&2; exit 1
+  fi
+  [[ -x /opt/s03/venv/bin/python ]] || "$PY" -m venv /opt/s03/venv
   /opt/s03/venv/bin/pip install -q --upgrade pip
   /opt/s03/venv/bin/pip install -q -e "/opt/s03/ft-s03[trade]"
   ln -sf /opt/s03/venv/bin/s03ft /usr/local/bin/s03ft

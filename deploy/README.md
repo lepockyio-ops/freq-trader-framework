@@ -35,7 +35,7 @@ useradd --system --home /var/lib/s03-ft --shell /usr/sbin/nologin s03trader
 
 # 2. 代码与依赖（锁定 freqtrade 版本）
 mkdir -p /opt/s03 && cp -r ft-s03 /opt/s03/ && python3 -m venv /opt/s03/venv
-/opt/s03/venv/bin/pip install freqtrade==2026.9 websocket-client requests
+/opt/s03/venv/bin/pip install freqtrade==2026.10 websocket-client requests
 chown -R root:root /opt/s03 && chmod -R go-w /opt/s03
 
 # 3. 参数与密钥

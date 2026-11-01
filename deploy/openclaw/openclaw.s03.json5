@@ -76,7 +76,7 @@
           deny: ["vibe-trading__*", "blockbeats__*", "read", "write", "edit", "apply_patch", "process", "browser", "gateway", "sessions_spawn"],
         },
       },
-      // 研究：沙箱内的研究副本；可派生子 agent。沙箱镜像需装好 s03ft 与 freqtrade 2026.9（核对）
+      // 研究：沙箱内的研究副本；可派生子 agent。沙箱镜像需装好 s03ft 与 freqtrade 2026.10（核对）
       "s03-research": {
         name: "S03 研究",
         workspace: "/srv/s03-research",

@@ -7,7 +7,8 @@
 | 入场计划随订单保存（`enter_tag`）：定仓、杠杆、入场检查、成交后止损只读这一份计划 | `timeframe`（周期只由策略决定，配置里不要写）、`startup_candle_count` |
 | 止损护栏：按下单价检查距离在 `stop_min_pct`–`stop_max_pct`；成交后再按成交价检查，不合格立即离场 | |
 | 仓位：单笔风险（含成本与资金费预留）、名义价值 ≤ 1 倍权益 | `populate_indicators()`：指标 |
-| 杠杆：强平距离 ≥ 3 倍止损距离，且不超过上限与交易所上限 | `populate_entry_trend()`：`enter_long`、`fw_stop`（绝对止损价）、可选 `fw_entry_cap` |
+| 杠杆：强平距离 ≥ 3 倍止损距离，且不超过上限与交易所上限 | `populate_entry_trend()`：`enter_long` 或 `enter_short`、`fw_stop`（绝对止损价）、可选 `fw_entry_cap` |
+| 交易方向：按配置 `fw_trade_direction` / `fw_pair_directions` 清掉不允许方向的信号，下单前再查一次 | |
 | 入场前检查：事件窗口、事件日历有效性、新闻守卫、总在险风险、相关性；检查本身出错一律拒绝 | 可选 `take_profit_legs()`：分批止盈（R 倍数、比例、标签） |
 | 交易所端止损（按绝对价格）、最长持有天数、Protections（连亏暂停、日/周故障保护、冷却） | 可选 `strategy_exit()`、`populate_exit_trend()`：离场 |
 | 监控告警、官方事件日历、复盘指标、研究矩阵、`s03ft` 命令、OpenClaw 运维、一键部署 | 可选 `framework_params`：覆盖框架默认值 |
@@ -31,13 +32,21 @@ Deflated Sharpe、PBO）。找想法可选接入 Vibe-Trading，经 `mcp-guard` 
 ## 注意
 
 - **止损绑定（v2.6）**：信号行的 `fw_stop`、`fw_entry_cap` 和信号时间由框架写进 `enter_tag`（策略自己的 `enter_tag` 保留在 `u=` 之后），随订单存进数据库。
-  成交（含部分成交、重启后第一次检查）时按成交价校验：止损低于成交价、距离不超过上限、实际风险不超过预算；成交价比下单价更优导致距离不足下限时，按 `better_fill_policy` 处理（见下）。
+  成交（含部分成交、重启后第一次检查）时按成交价校验：止损在成交价的正确一侧（多单低于、空单高于）、距离不超过上限、实际风险不超过预算；成交价比下单价更优导致距离不足下限时，按 `better_fill_policy` 处理（见下）。
   起点是**下单时实际生效的止损**（v2.8）：计划止损按下单价过护栏，`stop_min_mode = floor` 时已经抬到下限——与定仓、挂单风险用的是同一个值。
   距离正好落在下限到下限 + 0.02 个百分点之间（例如 floor 模式按下单价成交）时，只为价格取整留出 0.02 个百分点，不算“成交价更优”。
   不满足、或仓位没有框架计划（例如手动开仓）：`custom_exit` 立即以 `fw_invalid_stop:<原因>` 市价离场。
 - **分批止盈（v2.6）**：每一档是否完成按实际成交量判断（初始数量 − 当前数量，允许 2% 取整误差），不在下单前标记；有未完成订单时不重复下单；
   同一档下单 3 次仍未成交（拒单、低于最小名义等）就跳过并告警。
 - **价格已穿过止损（v2.9）**：成交后第一次设置止损时、重启恢复时或成交确认延迟时，价格可能已经跌破框架止损。freqtrade 的 `stoploss_from_absolute` 这时返回 0，而引擎把 0 当成无效值丢掉，止损停在兜底价（−99% ÷ 杠杆，10 倍约 −9.9%），交易所端止损也挂在那里。现在 `custom_stoploss` 不返回 0，`custom_exit` 发现“现价 ≤ 框架止损且引擎止损还没采用它”（`trade.stop_loss` 低于框架止损超过 `stop_adopted_tol` = 0.05%）就以 `fw_stop_crossed` 立即市价离场，记 ERROR 和 `stop_crossed_at`；离场单失败时 freqtrade 每轮重新询问，自动重试。引擎已经采用止损时交给引擎 / 交易所端止损，避免重复离场。
+- **多单与空单（v2.13）**：基类 `can_short = True`。框架的每一步都按方向处理：止损护栏（多单止损在下方、空单在上方，floor 模式向外抬到下限）、
+  定仓和杠杆（用止损距离的绝对值；强平距离多空用同一近似，模型推断）、`fw_entry_cap`（多单是限价上限、空单是限价下限）、
+  成交后绑定（成交价更优：多单更低、空单更高）、交易所端止损（`stoploss_from_absolute(is_short=…)`）、止损穿越（多单价格 ≤ 止损、空单 ≥ 止损）、
+  分批止盈（空单目标价在入场价下方）、在险风险、初始风险记录与 R。相关性检查按方向：同向且相关 > 0.8 拒绝；反向且相关 < −0.8 拒绝（等于同向下注）；
+  反向强正相关（对冲）不拒绝，但总在险风险仍相加。资金费预留多空相同（空单可能收到资金费，预留偏保守）。
+- **交易方向设置（v2.13，用户设定）**：配置 `fw_trade_direction`（`both` / `long` / `short`，默认 `both`）和 `fw_pair_directions`（按交易对覆盖）。
+  `advise_entry` 清掉不允许方向的信号（回测与实盘一致），`confirm_trade_entry` 再查一次；取值无效时 `bot_start` 报错、入场检查拒绝。
+  子类覆盖 `bot_start` 时要调用 `super().bot_start()`。
 - **框架止损保护（v2.10）**：freqtrade 的 StoplossGuard 只统计 `stop_loss`、`stoploss_on_exchange`、`trailing_stop_loss`、`liquidation`，
   框架以 `custom_exit` 发出的 `fw_stop_crossed`、`fw_invalid_stop:*` 不计数。框架在入场检查里按同样的参数（`stop_guard_trades` 6 次、
   `stop_guard_lookback_min` 7 天、`stop_guard_duration_min` 1 天，示例值，与 protections 共用）把两类合并计数：最近一笔止损类亏损离场

@@ -3,8 +3,9 @@
 继承 FrameworkStrategy 的策略只需要：
   1. 设置 timeframe、startup_candle_count；
   2. populate_indicators()：计算你要的指标（可用 @informative 引入其他周期）；
-  3. populate_entry_trend()：在入场信号行设置 enter_long = 1，并写入列 fw_stop（绝对止损价）；
-     可选写入 fw_entry_cap（限价上限，例如“突破价 × 1.001”），不写则按信号价成交；
+  3. populate_entry_trend()：在入场信号行设置 enter_long = 1（做多）或 enter_short = 1（做空），并写入列 fw_stop（绝对止损价：
+     多单在入场价下方，空单在入场价上方）；可选写入 fw_entry_cap（最差可接受的入场价：多单是限价上限，例如“突破价 × 1.001”；
+     空单是限价下限，例如“跌破价 × 0.999”），不写则按信号价成交；
   4. 可选：take_profit_legs()（分批止盈）、strategy_exit()（自定义离场）、populate_exit_trend()（离场信号）。
 
 框架负责（策略只要不覆盖下面这些回调，就不能绕过）：
@@ -12,14 +13,16 @@
     定仓、杠杆、入场检查、成交后的止损都只读这一份计划，重启后也一样（v2.6）；
   - 止损护栏：按下单价检查，距离必须在 stop_min_pct–stop_max_pct；太近时按 stop_min_mode 放弃或改为下限；
     成交价比下单价更优、距离跌破下限时，止损放宽到下限（风险仍不超过下单时的预算）；
-    止损不低于成交价、超出上限、缺少计划或实际风险超预算：立即市价离场（fw_invalid_stop），不留无止损仓位；
+    止损不在成交价的正确一侧（多单不低于、空单不高于成交价）、超出上限、缺少计划或实际风险超预算：立即市价离场（fw_invalid_stop）；
+  - 方向（v2.13）：多单与空单都支持；配置里的 fw_trade_direction（both / long / short）与 fw_pair_directions（按交易对覆盖）
+    决定允许哪个方向，不允许的信号在生成时就被清掉、下单前再查一次；
   - 仓位：单笔风险 = 权益 × risk_per_trade（含往返成本与资金费预留）；名义价值 ≤ 1 倍权益；
   - 杠杆：强平距离 ≥ liq_to_stop_multiple × 止损距离，且 ≤ max_position_leverage 与交易所上限；
   - 入场前检查：事件窗口、事件日历有效性（来源状态、时间格式、新鲜度、覆盖区间）、新闻守卫、
     总在险风险 ≤ max_open_risk、与已持仓相关性 ≤ corr_threshold。检查本身出错一律拒绝入场；
   - 交易所端止损（按绝对价格）、最长持有天数、Protections（连亏暂停、日/周故障保护、冷却）。
 已知限制见 docs/REFERENCE.md 的“已知问题”。
-所有数值是示例值，不代表适合任何策略；在子类里用 framework_params 覆盖。需要 freqtrade 2026.9。
+所有数值是示例值，不代表适合任何策略；在子类里用 framework_params 覆盖。需要 freqtrade 2026.10。
 """
 from __future__ import annotations
 
@@ -103,16 +106,34 @@ def is_stop_exit(reason) -> bool:
     return r in ENGINE_STOP_EXITS or r.startswith(FW_STOP_EXIT_PREFIXES)
 
 
+DIRECTIONS = ("both", "long", "short")
+
+
+def direction_allows(direction: str, is_short: bool) -> bool:
+    """方向设置是否允许这个方向。设置值无效时报错（调用方按“拒绝入场”处理）。"""
+    if direction not in DIRECTIONS:
+        raise ValueError(f"fw_trade_direction 必须是 {DIRECTIONS} 之一，收到 {direction!r}")
+    return direction == "both" or (direction == "short") == bool(is_short)
+
+
 # ============================================================== 纯函数（便于测试）
-def guarded_stop(entry: float, stop: float | None, fw: dict) -> float | None:
-    """框架止损护栏：返回合规的止损价，或 None（放弃入场）。"""
-    if stop is None or stop != stop or entry <= 0 or stop >= entry:
+def stop_distance(entry: float, stop: float, is_short: bool = False) -> float:
+    """止损距离（相对入场价的比例，止损在正确一侧时为正）：多单 (入场 − 止损) / 入场，空单 (止损 − 入场) / 入场。"""
+    return ((stop - entry) if is_short else (entry - stop)) / entry
+
+
+def guarded_stop(entry: float, stop: float | None, fw: dict, is_short: bool = False) -> float | None:
+    """框架止损护栏：返回合规的止损价，或 None（放弃入场）。多单止损必须在入场价下方，空单在上方（v2.13）。"""
+    if stop is None or stop != stop or entry <= 0:
         return None
-    dist = (entry - stop) / entry * 100
+    dist = stop_distance(entry, stop, is_short) * 100
+    if dist <= 0:
+        return None
     if dist < fw["stop_min_pct"]:
         if fw["stop_min_mode"] != "floor":
             return None
-        stop, dist = entry * (1 - fw["stop_min_pct"] / 100), fw["stop_min_pct"]
+        stop = entry * (1 + fw["stop_min_pct"] / 100) if is_short else entry * (1 - fw["stop_min_pct"] / 100)
+        dist = fw["stop_min_pct"]
     if dist > fw["stop_max_pct"]:
         return None
     return stop
@@ -127,7 +148,8 @@ def stake_for(equity: float, stop_dist: float, leverage: float, fw: dict = FW_DE
 
 
 def isolated_leverage(stop_dist: float, max_lev: float, mm: float, fw: dict = FW_DEFAULTS) -> int:
-    """逐仓杠杆 = min(上限, 交易所上限, floor(1 / (k × 止损距离 × (1 − mm) + mm)))，k = liq_to_stop_multiple。"""
+    """逐仓杠杆 = min(上限, 交易所上限, floor(1 / (k × 止损距离 × (1 − mm) + mm)))，k = liq_to_stop_multiple。
+    多空用同一个近似（强平距离约为 1/杠杆 − 维持保证金率；空单的强平价在上方，距离同样近似，模型推断）。"""
     raw = 1.0 / (fw["liq_to_stop_multiple"] * stop_dist * (1 - mm) + mm)
     return int(max(1, min(fw["max_position_leverage"], max_lev, math.floor(raw))))
 
@@ -170,7 +192,7 @@ def _utc(s) -> pd.Timestamp:
 # ============================================================== 基类
 class FrameworkStrategy(IStrategy):
     INTERFACE_VERSION = 3
-    can_short = False
+    can_short = True                           # v2.13：多空都支持；实际允许哪个方向由配置 fw_trade_direction / fw_pair_directions 决定
     process_only_new_candles = True
     minimal_roi = {"0": 100}                   # 关掉默认 ROI 离场
     stoploss = -0.99                           # 仅作兜底；实际止损按 fw_stop 的绝对价格
@@ -209,6 +231,26 @@ class FrameworkStrategy(IStrategy):
             raise ValueError(f"S03_RESEARCH_OVERRIDES 含不允许的参数：{sorted(unknown)}")
         return ov
 
+    def trade_direction(self, pair: str | None = None) -> str:
+        """这个交易对允许的方向（v2.13）：配置 fw_pair_directions[pair] 优先，否则 fw_trade_direction，默认 both。
+        在配置文件里设置（用户设定），不写在策略里：同一个策略可以按账户只做多、只做空或多空都做。"""
+        cfg = getattr(self, "config", None) or {}
+        per = cfg.get("fw_pair_directions") or {}
+        d = per.get(pair) if pair and pair in per else cfg.get("fw_trade_direction", "both")
+        direction_allows(d, False)                     # 校验取值（无效时报错）
+        return d
+
+    def side_allowed(self, pair: str, is_short: bool) -> bool:
+        return direction_allows(self.trade_direction(pair), is_short)
+
+    def bot_start(self, **kwargs) -> None:
+        """启动时校验方向设置：取值无效直接报错（不让机器人带着无效设置运行）。子类覆盖时调用 super().bot_start()。"""
+        cfg = getattr(self, "config", None) or {}
+        self.trade_direction()
+        for p in (cfg.get("fw_pair_directions") or {}):
+            self.trade_direction(p)
+        logger.info("交易方向：默认 %s；按交易对覆盖：%s", self.trade_direction(), cfg.get("fw_pair_directions") or "无")
+
     @property
     def protections(self):
         fw = self.fw
@@ -238,14 +280,22 @@ class FrameworkStrategy(IStrategy):
         之后的定仓、杠杆、入场检查、成交后的止损都只读这份计划，不再“重新找最近一次信号”
         （v2.5 之前的做法：挂单期间出现新信号、成交价更优或重启后，止损可能换成别的或丢失）。"""
         df = super().advise_entry(dataframe, metadata)
-        if df is None or df.empty or "enter_long" not in df.columns:
+        if df is None or df.empty or not ({"enter_long", "enter_short"} & set(df.columns)):
             return df
+        sides = [c for c in ("enter_long", "enter_short") if c in df.columns]
         delay = int(self.fw.get("research_entry_delay_bars") or 0)
         if delay > 0 and self._runmode() in RESEARCH_RUNMODES:
-            cols = [c for c in ("enter_long", "fw_stop", "fw_entry_cap", "enter_tag") if c in df.columns]
+            cols = [c for c in (*sides, "fw_stop", "fw_entry_cap", "enter_tag") if c in df.columns]
             df[cols] = df[cols].shift(delay)
-            df["enter_long"] = df["enter_long"].fillna(0)
-        m = df["enter_long"] == 1
+            for c in sides:
+                df[c] = df[c].fillna(0)
+        pair = (metadata or {}).get("pair")
+        for c in sides:                                    # v2.13：配置不允许的方向，信号在这里清掉（回测与实盘一致）
+            if not self.side_allowed(pair, c == "enter_short"):
+                df[c] = 0
+        m = pd.Series(False, index=df.index)
+        for c in sides:
+            m |= df[c] == 1
         if not m.any():
             return df
         nan = pd.Series(float("nan"), index=df.index)
@@ -256,12 +306,12 @@ class FrameworkStrategy(IStrategy):
                                   for sv, cv, tv, uv in zip(stop, cap, df["date"][m], user)]
         return df
 
-    def _plan_stop(self, entry_tag, rate: float) -> float | None:
+    def _plan_stop(self, entry_tag, rate: float, is_short: bool = False) -> float | None:
         """按下单价检查计划止损：返回合规的止损价，或 None（不入场）。"""
         plan = decode_plan(entry_tag)
         if plan is None or not rate or rate <= 0:
             return None
-        return guarded_stop(float(rate), plan["stop"], self.fw)
+        return guarded_stop(float(rate), plan["stop"], self.fw, is_short)
 
     def _mm(self, pair: str) -> float:
         m = self.fw["maint_margin_est"]
@@ -337,28 +387,32 @@ class FrameworkStrategy(IStrategy):
     def custom_entry_price(self, pair, trade, current_time, proposed_rate, entry_tag, side, **kwargs) -> float:
         plan = decode_plan(entry_tag)
         cap = plan["cap"] if plan else None
-        return min(proposed_rate, cap) if cap else proposed_rate
+        if not cap:
+            return proposed_rate
+        return max(proposed_rate, cap) if side == "short" else min(proposed_rate, cap)   # 空单：不低于下限
 
     def leverage(self, pair, current_time, current_rate, proposed_leverage, max_leverage, entry_tag, side,
                  **kwargs) -> float:
         try:
-            stop = self._plan_stop(entry_tag, current_rate)
+            short = side == "short"
+            stop = self._plan_stop(entry_tag, current_rate, short)
             if stop is None:
                 return 1.0
-            return float(isolated_leverage((current_rate - stop) / current_rate, max_leverage, self._mm(pair), self.fw))
+            return float(isolated_leverage(stop_distance(current_rate, stop, short), max_leverage, self._mm(pair), self.fw))
         except Exception:
             logger.exception("杠杆计算出错，按 1 倍处理：%s", pair)
             return 1.0
 
     def custom_stake_amount(self, pair, current_time, current_rate, proposed_stake, min_stake, max_stake,
                             leverage, entry_tag, side, **kwargs) -> float:
-        """按下单价（限价，≤ fw_entry_cap）定仓。成交价不会高于下单价，所以实际止损风险不超过这里的预算。
+        """按下单价（限价：多单 ≤ fw_entry_cap，空单 ≥ fw_entry_cap）定仓。限价单的成交价不会比下单价差，所以实际止损风险不超过这里的预算。
         出错返回 0（不入场）：freqtrade 对这个回调出错时的默认值是 proposed_stake，不能依赖它。"""
         try:
-            stop = self._plan_stop(entry_tag, current_rate)
+            short = side == "short"
+            stop = self._plan_stop(entry_tag, current_rate, short)
             if stop is None:
                 return 0                                                   # 没有计划或止损不合规：不入场
-            stake = stake_for(self.wallets.get_total_stake_amount(), (current_rate - stop) / current_rate, leverage, self.fw)
+            stake = stake_for(self.wallets.get_total_stake_amount(), stop_distance(current_rate, stop, short), leverage, self.fw)
             if min_stake and stake < min_stake:
                 return 0
             return min(stake, max_stake)
@@ -406,13 +460,17 @@ class FrameworkStrategy(IStrategy):
                             **kwargs) -> bool:
         """下单前最后一道检查。任何异常都按“拒绝入场”处理：freqtrade 对这个回调出错时的默认返回值是 True（放行）。"""
         try:
-            return self._confirm_entry(pair, amount, rate, current_time, entry_tag)
+            return self._confirm_entry(pair, amount, rate, current_time, entry_tag, side)
         except Exception:
             logger.exception("入场检查出错，按拒绝处理：%s", pair)
             return False
 
-    def _confirm_entry(self, pair, amount, rate, current_time, entry_tag) -> bool:
+    def _confirm_entry(self, pair, amount, rate, current_time, entry_tag, side="long") -> bool:
         if self.is_template:
+            return False
+        short = side == "short"
+        if not self.side_allowed(pair, short):
+            logger.info("配置不允许%s：拒绝入场：%s", "做空" if short else "做多", pair)
             return False
         cal_ok, cal_reason, times = self._calendar(current_time)
         if not cal_ok:
@@ -424,11 +482,11 @@ class FrameworkStrategy(IStrategy):
         if nb:
             logger.info("新闻事件守卫：%s 暂停新开仓（%s）", pair, nb)
             return False
-        stop = self._plan_stop(entry_tag, rate)
-        if stop is None or not rate or rate <= stop:
+        stop = self._plan_stop(entry_tag, rate, short)
+        if stop is None or not rate or stop_distance(rate, stop, short) <= 0:
             return False
         equity = self.wallets.get_total_stake_amount()
-        new_risk = amount * (rate - stop)
+        new_risk = amount * abs(rate - stop)
         open_trades = Trade.get_trades_proxy(is_open=True)
         stuck = [t.pair for t in open_trades if self._partial_entry_open(t)]
         if stuck:
@@ -445,7 +503,7 @@ class FrameworkStrategy(IStrategy):
         if open_risk + new_risk > equity * self.fw["max_open_risk"] * 1.0001:
             return False
         others = [t for t in open_trades if t.pair != pair]
-        if others and not self._corr_ok(pair, others):
+        if others and not self._corr_ok(pair, others, short):
             return False
         return True
 
@@ -489,7 +547,7 @@ class FrameworkStrategy(IStrategy):
         """下单时实际生效的止损（v2.8）：计划止损按下单价过护栏（floor 模式会被抬到下限）——与定仓用的是同一个值。
         v2.7 挂单风险用的是计划里的原始止损，floor 模式下比定仓用的止损近，在险风险少算（外部审查 v2.7 P1-1）。"""
         px = getattr(t, "open_rate_requested", None) or getattr(t, "open_rate", None)
-        return self._plan_stop(getattr(t, "enter_tag", None), float(px)) if px else None
+        return self._plan_stop(getattr(t, "enter_tag", None), float(px), bool(getattr(t, "is_short", False))) if px else None
 
     def _open_risk(self, open_trades) -> float | None:
         """已占用的止损风险（v2.7 修正）：
@@ -519,7 +577,7 @@ class FrameworkStrategy(IStrategy):
                 qty, px = float(t.amount), float(t.open_rate)
             if qty <= 0:
                 return None                                 # 读不出数量：不能证明风险为 0
-            total += max(0.0, (px - float(sp)) * qty)
+            total += max(0.0, stop_distance(px, float(sp), bool(getattr(t, "is_short", False))) * px * qty)
         return total
 
     def check_entry_timeout(self, pair, trade, order, current_time, **kwargs) -> bool:
@@ -586,8 +644,10 @@ class FrameworkStrategy(IStrategy):
             return []
         return [(p, "1d") for p in pairs]
 
-    def _corr_ok(self, pair: str, others) -> bool:
-        """与任一已持仓或挂单的 30 日日收益相关系数 > corr_threshold 视为同一笔风险，拒绝。
+    def _corr_ok(self, pair: str, others, is_short: bool = False) -> bool:
+        """与已持仓或挂单是不是同一笔风险（30 日日收益相关系数）：同方向时相关系数 > corr_threshold 拒绝；
+        反方向时相关系数 < −corr_threshold 拒绝（例如做空 A、做多与 A 强负相关的 B，等于同向下注；v2.13）。
+        反方向且强正相关（对冲）不拒绝，但总在险风险仍按两笔相加计算（偏保守）。
         日线缺失、不足 31 根或算不出相关系数时也拒绝（v2.5 及以前会直接跳过检查）。"""
         closes = {}
         for p in [pair] + [t.pair for t in others]:
@@ -599,14 +659,15 @@ class FrameworkStrategy(IStrategy):
         rets = pd.DataFrame(closes).pct_change()
         for t in others:
             c = rets[pair].corr(rets[t.pair])
-            if c != c or c > self.fw["corr_threshold"]:
+            same = bool(getattr(t, "is_short", False)) == bool(is_short)
+            if c != c or (c if same else -c) > self.fw["corr_threshold"]:
                 return False
         return True
 
     # ---------------------------------------------------------- 成交后：按计划绑定止损（成交、部分成交、重启后都走这里）
     def _bind_stop(self, trade) -> float | None:
         """第一次看到有成交的仓位时，把 enter_tag 里的计划止损绑定到交易上并校验：
-        - 止损必须低于成交价，距离不超过 stop_max_pct；成交价更优导致距离不足下限时放宽到下限；
+        - 止损必须在成交价的正确一侧（多单低于、空单高于），距离不超过 stop_max_pct；成交价更优导致距离不足下限时放宽到下限；
         - 实际止损风险不超过 权益 × risk_per_trade（5% 容差，覆盖手续费与取整）；
         不满足（或缺少计划）时记 fw_invalid，custom_exit 立即市价离场。返回止损价或 None。"""
         sp = trade.get_custom_data("stop_px")
@@ -615,14 +676,16 @@ class FrameworkStrategy(IStrategy):
         if trade.get_custom_data("fw_invalid") or not getattr(trade, "nr_of_successful_entries", 1) or not trade.amount:
             return None                                     # 还没有已完成的入场成交：交易所上也还没有仓位
         fw, fill = self.fw, float(trade.open_rate)
+        short = bool(getattr(trade, "is_short", False))
+        sgn = 1 if short else -1                             # 止损相对成交价的方向：多单在下方（−），空单在上方（+）
         plan, reason, stop = decode_plan(trade.enter_tag), "", None
         if plan is None:
             reason = "no_plan"
         else:
             stop = self._order_stop(trade) or plan["stop"]    # 下单时生效的止损（floor 模式已抬到下限），与定仓一致
-            dist = (fill - stop) / fill * 100 if fill > 0 else -1
-            if stop >= fill:
-                reason = "stop_not_below_fill"
+            dist = stop_distance(fill, stop, short) * 100 if fill > 0 else -1
+            if dist <= 0:
+                reason = "stop_not_above_fill" if short else "stop_not_below_fill"
             elif dist > fw["stop_max_pct"] + 1e-9:
                 reason = "stop_too_far"
             else:
@@ -633,12 +696,12 @@ class FrameworkStrategy(IStrategy):
                     elif policy == "keep":
                         trade.set_custom_data("stop_kept_below_min", True)
                     else:
-                        stop = fill * (1 - (fw["stop_min_pct"] + 0.02) / 100)   # 多留 0.02 个百分点：按价格最小变动单位取整后仍不低于下限
+                        stop = fill * (1 + sgn * (fw["stop_min_pct"] + 0.02) / 100)   # 多留 0.02 个百分点：按价格最小变动单位取整后仍不低于下限
                         trade.set_custom_data("stop_widened", True)
                 elif dist < fw["stop_min_pct"] + 0.02:        # 正好在下限附近（例如 floor 模式）：只为取整留余量，与成交价策略无关
-                    stop = fill * (1 - (fw["stop_min_pct"] + 0.02) / 100)
+                    stop = fill * (1 + sgn * (fw["stop_min_pct"] + 0.02) / 100)
                 equity = self.wallets.get_total_stake_amount() if getattr(self, "wallets", None) else None
-                if not reason and equity and trade.amount * (fill - stop) > equity * fw["risk_per_trade"] * 1.05:
+                if not reason and equity and trade.amount * abs(fill - stop) > equity * fw["risk_per_trade"] * 1.05:
                     reason = "risk_over_budget"
         if reason:
             trade.set_custom_data("fw_invalid", reason)
@@ -650,7 +713,7 @@ class FrameworkStrategy(IStrategy):
         trade.set_custom_data("order_stop", float(self._order_stop(trade) or plan["stop"]))
         trade.set_custom_data("init_stake", float(trade.stake_amount))
         trade.set_custom_data("init_amount", float(trade.amount))
-        trade.set_custom_data("fw_init_risk", float(trade.amount) * (fill - float(stop)))   # 复盘 R 的分母（v2.10）
+        trade.set_custom_data("fw_init_risk", float(trade.amount) * abs(fill - float(stop)))   # 复盘 R 的分母（v2.10）
         self._log_risk(trade, float(stop), "")
         return float(stop)
 
@@ -665,13 +728,14 @@ class FrameworkStrategy(IStrategy):
             fw, amt, fill = self.fw, float(trade.amount or 0), float(trade.open_rate)
             px = float(getattr(trade, "open_rate_requested", None) or fill)
             order_stop = self._order_stop(trade)
+            short = bool(getattr(trade, "is_short", False))
             if stop is not None:
-                risk = amt * (fill - stop)
-            elif order_stop is not None and px > order_stop:
-                risk = amt * (px - order_stop)
+                risk = amt * abs(fill - stop)
+            elif order_stop is not None and stop_distance(px, order_stop, short) > 0:
+                risk = amt * abs(px - order_stop)
             else:
                 risk = None
-            rec = {"pair": trade.pair, "open_ts": int(trade.open_date_utc.timestamp()), "amount": amt, "open_rate": fill,
+            rec = {"pair": trade.pair, "open_ts": int(trade.open_date_utc.timestamp()), "is_short": short, "amount": amt, "open_rate": fill,
                    "order_price": px, "order_stop": order_stop, "stop": stop, "init_risk": risk, "invalid": invalid or None,
                    "widened": bool(trade.get_custom_data("stop_widened")), "kept_below_min": bool(trade.get_custom_data("stop_kept_below_min")),
                    **{k: fw[k] for k in ("stop_min_pct", "stop_max_pct", "stop_min_mode", "better_fill_policy")}}
@@ -689,21 +753,31 @@ class FrameworkStrategy(IStrategy):
         sp = self._bind_stop(trade)
         if sp is None:
             return None                                   # 无效仓位由 custom_exit 立即离场
-        if current_rate <= sp:
+        short = bool(getattr(trade, "is_short", False))
+        if (current_rate >= sp) if short else (current_rate <= sp):
             # 价格已经穿过止损：stoploss_from_absolute 会返回 0，freqtrade 把 0 当成无效值丢掉，引擎止损停在兜底价
-            # （10 倍杠杆约 −9.9%）。这里不返回 0，由 custom_exit 立即市价离场（v2.9，外部审查 v2.8 P0）。
+            # （10 倍杠杆约 9.9%）。这里不返回 0，由 custom_exit 立即市价离场（v2.9，外部审查 v2.8 P0）。
             return None
-        return stoploss_from_absolute(sp, current_rate, is_short=False, leverage=trade.leverage)
+        return stoploss_from_absolute(sp, current_rate, is_short=short, leverage=trade.leverage)
 
     def _stop_adopted(self, trade, sp: float) -> bool:
-        """引擎（和交易所端止损）是否已经采用框架止损：trade.stop_loss 不低于 sp（允许按价格精度取整的误差）。"""
+        """引擎（和交易所端止损）是否已经采用框架止损：多单 trade.stop_loss 不低于 sp、空单不高于 sp（允许按价格精度取整的误差）。
+        兜底止损多单在下方很远（−99% ÷ 杠杆）、空单在上方很远，都不算采用。"""
         cur = getattr(trade, "stop_loss", None)
-        return cur is not None and float(cur) >= sp * (1 - self.fw["stop_adopted_tol"])
+        if cur is None:
+            return False
+        tol = self.fw["stop_adopted_tol"]
+        if getattr(trade, "is_short", False):
+            return float(cur) <= sp * (1 + tol)
+        return float(cur) >= sp * (1 - tol)
 
     def _stop_crossed(self, trade, sp: float | None, rate: float) -> bool:
         """价格已经到达或穿过框架止损，而引擎还没采用这个止损（首次绑定前价格已跌破、重启恢复、成交确认延迟）。
         引擎已采用时交给引擎 / 交易所端止损处理，避免重复离场。"""
-        return sp is not None and rate is not None and float(rate) <= sp and not self._stop_adopted(trade, sp)
+        if sp is None or rate is None:
+            return False
+        crossed = float(rate) >= sp if getattr(trade, "is_short", False) else float(rate) <= sp
+        return crossed and not self._stop_adopted(trade, sp)
 
     # ---------------------------------------------------------- 分批与离场
     TP_MAX_ATTEMPTS = 3
@@ -715,11 +789,12 @@ class FrameworkStrategy(IStrategy):
         有未完成的订单时不再下新单；同一档下单 TP_MAX_ATTEMPTS 次仍没成交（拒单、低于最小名义等）就跳过并告警。"""
         sp = self._bind_stop(trade)
         legs = self.take_profit_legs(trade)
-        if sp is None or trade.open_rate <= sp or not legs or getattr(trade, "has_open_orders", False):
+        short = bool(getattr(trade, "is_short", False))
+        if sp is None or stop_distance(trade.open_rate, sp, short) <= 0 or not legs or getattr(trade, "has_open_orders", False):
             return None
         init_amount = float(trade.get_custom_data("init_amount") or trade.amount)
         exited = 1.0 - float(trade.amount) / init_amount if init_amount > 0 else 0.0
-        r_px = trade.open_rate - sp
+        r_px = abs(trade.open_rate - sp)
         attempts = dict(trade.get_custom_data("tp_attempts") or {})
         skipped = list(trade.get_custom_data("tp_skipped") or [])
         done, cum = [], 0.0
@@ -730,7 +805,8 @@ class FrameworkStrategy(IStrategy):
                 continue
             if tag in skipped:
                 continue
-            if current_rate < trade.open_rate + r_mult * r_px:
+            target = trade.open_rate - r_mult * r_px if short else trade.open_rate + r_mult * r_px
+            if (current_rate > target) if short else (current_rate < target):
                 break
             if attempts.get(tag, 0) >= self.TP_MAX_ATTEMPTS:
                 logger.warning("分批止盈 %s 已下单 %d 次仍未成交，跳过：%s", tag, attempts[tag], trade.pair)

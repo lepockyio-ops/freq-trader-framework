@@ -27,14 +27,16 @@ class MyStrategy(FrameworkStrategy):
 
     def populate_entry_trend(self, dataframe: DataFrame, metadata: dict) -> DataFrame:
         # TODO 2：在入场信号行设置
-        #   dataframe.loc[条件, ["enter_long", "enter_tag", "fw_stop"]] = (1, "我的信号", 止损价)
+        #   做多：dataframe.loc[条件, ["enter_long", "enter_tag", "fw_stop"]] = (1, "我的信号", 止损价)    # 止损在入场价下方
+        #   做空：dataframe.loc[条件, ["enter_short", "enter_tag", "fw_stop"]] = (1, "我的信号", 止损价)   # 止损在入场价上方
         #   fw_stop 必须是绝对价格；框架会检查止损距离（默认 0.8%–3%），不合规就不入场。
-        #   可选 fw_entry_cap：限价上限（例如突破价 × 1.001），避免追高。
+        #   可选 fw_entry_cap：最差可接受的入场价——多单是限价上限（例如突破价 × 1.001），空单是限价下限（例如跌破价 × 0.999）。
+        #   允许做多、做空还是都做，由配置文件的 fw_trade_direction（both / long / short）和 fw_pair_directions 决定，策略里不用写。
         dataframe["fw_stop"] = float("nan")
         return dataframe
 
     def populate_exit_trend(self, dataframe: DataFrame, metadata: dict) -> DataFrame:
-        # TODO 3（可选）：离场信号 dataframe.loc[条件, ["exit_long", "exit_tag"]] = (1, "原因")
+        # TODO 3（可选）：离场信号 dataframe.loc[条件, ["exit_long", "exit_tag"]] = (1, "原因")；空单用 exit_short
         return dataframe
 
     # TODO 4（可选）：分批止盈
