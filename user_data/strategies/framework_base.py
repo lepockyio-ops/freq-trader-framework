@@ -104,7 +104,22 @@ def is_stop_exit(reason) -> bool:
     return r in ENGINE_STOP_EXITS or r.startswith(FW_STOP_EXIT_PREFIXES)
 
 
+DIRECTIONS = ("both", "long", "short")
+
+
+def direction_allows(direction: str, is_short: bool) -> bool:
+    """方向设置是否允许这个方向。设置值无效时报错（调用方按“拒绝入场”处理）。"""
+    if direction not in DIRECTIONS:
+        raise ValueError(f"fw_trade_direction 必须是 {DIRECTIONS} 之一，收到 {direction!r}")
+    return direction == "both" or (direction == "short") == bool(is_short)
+
+
 # ============================================================== 纯函数（便于测试）
+def stop_distance(entry: float, stop: float, is_short: bool = False) -> float:
+    """止损距离（相对入场价的比例，止损在正确一侧时为正）：多单 (入场 − 止损) / 入场，空单 (止损 − 入场) / 入场。"""
+    return ((stop - entry) if is_short else (entry - stop)) / entry
+
+
 def guarded_stop(entry: float, stop: float | None, fw: dict, is_short: bool = False) -> float | None:
     """框架止损护栏：返回合规的止损价，或 None（放弃入场）。"""
     if stop is None or not math.isfinite(float(stop)) or not math.isfinite(entry) or entry <= 0 or stop <= 0:
@@ -216,11 +231,28 @@ class FrameworkStrategy(IStrategy):
         return (isinstance(pair, str) and re.fullmatch(r"[A-Z0-9]+/USDT:USDT", pair) is not None
                 and pair in pairs and not any(re.fullmatch(p, pair) for p in exchange.get("pair_blacklist", [])))
 
-    def side_enabled(self, side: str) -> bool:
-        mode = (getattr(self, "config", {}) or {}).get("trading_policy", {}).get("direction", "both")
-        if mode not in ("both", "long", "short"):
-            raise ValueError("trading_policy.direction must be both, long or short")
-        return side in ("long", "short") and (mode == "both" or mode == side)
+    def trade_direction(self, pair: str | None = None) -> str:
+        """这个交易对允许的方向（v2.13）：配置 fw_pair_directions[pair] 优先，否则 fw_trade_direction，默认 both。
+        在配置文件里设置（用户设定），不写在策略里：同一个策略可以按账户只做多、只做空或多空都做。"""
+        cfg = getattr(self, "config", None) or {}
+        per = cfg.get("fw_pair_directions") or {}
+        d = per.get(pair) if pair and pair in per else cfg.get("fw_trade_direction", "both")
+        direction_allows(d, False)                     # 校验取值（无效时报错）
+        return d
+
+    def side_allowed(self, pair: str, is_short: bool) -> bool:
+        return direction_allows(self.trade_direction(pair), is_short)
+
+    def bot_start(self, **kwargs) -> None:
+        """启动时校验方向设置：取值无效直接报错（不让机器人带着无效设置运行）。子类覆盖时调用 super().bot_start()。"""
+        cfg = getattr(self, "config", None) or {}
+        self.trade_direction()
+        for p in (cfg.get("fw_pair_directions") or {}):
+            self.trade_direction(p)
+        logger.info("交易方向：默认 %s；按交易对覆盖：%s", self.trade_direction(), cfg.get("fw_pair_directions") or "无")
+
+    def side_enabled(self, side: str, pair: str | None = None) -> bool:
+        return side in ("long", "short") and self.side_allowed(pair, side == "short")
 
     def filter_entry_signals(self, df: DataFrame, metadata: dict) -> DataFrame:
         """Apply the same entry policy to direct research signals and engine analysis."""
@@ -228,7 +260,7 @@ class FrameworkStrategy(IStrategy):
             col = "enter_" + side
             if col not in df:
                 df[col] = 0
-            if not self.pair_enabled(metadata.get("pair")) or not self.side_enabled(side):
+            if not self.pair_enabled(metadata.get("pair")) or not self.side_enabled(side, metadata.get("pair")):
                 df[col] = 0
         conflict = df["enter_long"].eq(1) & df["enter_short"].eq(1)
         df.loc[conflict, ["enter_long", "enter_short"]] = 0
@@ -403,7 +435,7 @@ class FrameworkStrategy(IStrategy):
         """按实际方向和下单价定仓。fw_entry_cap 限制多头最高买价 / 空头最低卖价；成交后另验风险。
         出错返回 0（不入场）：freqtrade 对这个回调出错时的默认值是 proposed_stake，不能依赖它。"""
         try:
-            if not self.pair_enabled(pair) or not self.side_enabled(side):
+            if not self.pair_enabled(pair) or not self.side_enabled(side, pair):
                 return 0
             stop = self._plan_stop(entry_tag, current_rate, side)
             if stop is None:
@@ -462,7 +494,7 @@ class FrameworkStrategy(IStrategy):
             return False
 
     def _confirm_entry(self, pair, amount, rate, current_time, entry_tag, side="long") -> bool:
-        if self.is_template or not self.pair_enabled(pair) or not self.side_enabled(side):
+        if self.is_template or not self.pair_enabled(pair) or not self.side_enabled(side, pair):
             return False
         cal_ok, cal_reason, times = self._calendar(current_time)
         if not cal_ok:
@@ -500,7 +532,7 @@ class FrameworkStrategy(IStrategy):
         if open_risk + new_risk > equity * self.fw["max_open_risk"] * 1.0001:
             return False
         others = [t for t in open_trades if t.pair != pair]
-        if others and not self._corr_ok(pair, others):
+        if others and not self._corr_ok(pair, others, side == "short"):
             return False
         return True
 
@@ -645,8 +677,10 @@ class FrameworkStrategy(IStrategy):
             return []
         return [(p, "1d") for p in pairs]
 
-    def _corr_ok(self, pair: str, others) -> bool:
-        """与任一已持仓或挂单的 30 日日收益相关系数绝对值 > corr_threshold 视为同一笔风险，拒绝。
+    def _corr_ok(self, pair: str, others, is_short: bool = False) -> bool:
+        """与已持仓或挂单是不是同一笔风险（30 日日收益相关系数）：同方向时相关系数 > corr_threshold 拒绝；
+        反方向时相关系数 < −corr_threshold 拒绝（例如做空 A、做多与 A 强负相关的 B，等于同向下注；v2.13）。
+        反方向且强正相关（对冲）不拒绝，但总在险风险仍按两笔相加计算（偏保守）。
         日线缺失、不足 31 根或算不出相关系数时也拒绝（v2.5 及以前会直接跳过检查）。"""
         closes = {}
         for p in [pair] + [t.pair for t in others]:
@@ -658,7 +692,8 @@ class FrameworkStrategy(IStrategy):
         rets = pd.DataFrame(closes).pct_change()
         for t in others:
             c = rets[pair].corr(rets[t.pair])
-            if c != c or abs(c) > self.fw["corr_threshold"]:
+            same = bool(getattr(t, "is_short", False)) == bool(is_short)
+            if c != c or (c if same else -c) > self.fw["corr_threshold"]:
                 return False
         return True
 
@@ -686,7 +721,7 @@ class FrameworkStrategy(IStrategy):
             stop = self._order_stop(trade) or plan["stop"]    # 下单时生效的止损（floor 模式已抬到下限），与定仓一致
             dist = direction * (fill - stop) / fill * 100 if fill > 0 else -1
             if not math.isfinite(fill) or not math.isfinite(stop) or dist <= 0:
-                reason = "stop_not_below_fill"
+                reason = "stop_not_above_fill" if direction == -1 else "stop_not_below_fill"
             elif dist > fw["stop_max_pct"] + 1e-9:
                 reason = "stop_too_far"
             else:

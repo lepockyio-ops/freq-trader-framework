@@ -55,7 +55,14 @@ rm -rf "$R/opt/s03/ft-s03.new" && mkdir -p "$R/opt/s03/ft-s03.new"
     --exclude='*.egg-info' -cf - . ) | tar -xf - -C "$R/opt/s03/ft-s03.new"
 rm -rf "$R/opt/s03/ft-s03" && mv "$R/opt/s03/ft-s03.new" "$R/opt/s03/ft-s03"
 if ! fake; then
-  [[ -x /opt/s03/venv/bin/python ]] || python3 -m venv /opt/s03/venv
+  # freqtrade 2026.10 需要 Python ≥ 3.12（不再支持 3.11）。可用 S03_PYTHON=python3.12 指定解释器。
+  PY="${S03_PYTHON:-python3}"
+  "$PY" -c 'import sys; sys.exit(0 if sys.version_info >= (3, 12) else 1)' \
+    || { echo "需要 Python ≥ 3.12（当前 $("$PY" -V 2>&1)）：安装 python3.12 后用 S03_PYTHON=python3.12 重跑" >&2; exit 1; }
+  if [[ -x /opt/s03/venv/bin/python ]] && ! /opt/s03/venv/bin/python -c 'import sys; sys.exit(0 if sys.version_info >= (3, 12) else 1)'; then
+    echo "/opt/s03/venv 是 Python < 3.12 建的：先备份后删除这个目录，再重跑 install.sh" >&2; exit 1
+  fi
+  [[ -x /opt/s03/venv/bin/python ]] || "$PY" -m venv /opt/s03/venv
   /opt/s03/venv/bin/pip install -q --upgrade pip
   /opt/s03/venv/bin/pip install -q -e "/opt/s03/ft-s03[trade]"
   ln -sf /opt/s03/venv/bin/s03ft /usr/local/bin/s03ft

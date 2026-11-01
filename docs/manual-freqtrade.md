@@ -1,4 +1,4 @@
-# 交易框架模板手册（freqtrade · 策略留空 v2.12）
+# 交易框架模板手册（freqtrade · 策略留空 v2.13）
 
 本手册描述**当前代码**的行为。旧版 S-03 策略（S03Strategy、日线 9 日 EMA、3R/5R 分批、4 个标的等）只存在于 git 历史 v1.x，与本模板无关。
 命令细节以 `README.md` 为准；框架接口见 `docs/FRAMEWORK.md`；研究与统计口径见 `docs/RESEARCH_LAB.md`；已知问题见 `docs/REFERENCE.md`。
@@ -16,8 +16,9 @@
 
 | 项目 | 当前设置 | 标签 |
 |---|---|---|
-| 交易所 | Binance USDⓈ-M 永续，逐仓，可配置 both / long / short | 用户设定 |
-| 交易对 | BTC、ETH、SOL、BNB、HYPE（`pair_whitelist`） | 用户设定 |
+| 交易所 | Binance USDⓈ-M 永续，逐仓 | 用户设定 |
+| 交易方向 | 多空都做（`fw_trade_direction: both`）；可改为只做多 `long` 或只做空 `short`，或用 `fw_pair_directions` 按交易对设置 | 用户设定 |
+| 交易对 | BTC、ETH、SOL、BNB、HYPE（`pair_whitelist`；可删减或追加，同步修改 `monitor.toml` 的 `pairs`，见 README 第 4 节） | 用户设定 |
 | 同时持仓 | `max_open_trades = 3` | 示例值 |
 | 运行模式 | `dry_run: true`（改为 false 属于 G9，只能由你操作） | 用户设定 |
 | 周期 | **只由策略的 `timeframe` 决定**；配置里不要写 `timeframe`（会覆盖策略，`s03ft doctor` 会检查） | 已核验事实 |
@@ -37,7 +38,7 @@
 | 保证（策略不覆盖框架回调时） | 实现 | 限制 |
 |---|---|---|
 | 止损与订单绑定 | 信号行的 `fw_stop`、`fw_entry_cap`、信号时间写进 `enter_tag`，随订单存进数据库；定仓、杠杆、入场检查、成交后的止损都只读这份计划 | 手动开仓（没有框架计划）会被立即平仓 |
-| 止损护栏 0.8%–3% | 按下单价检查；成交后按成交价再查：止损必须低于成交价、距离不超过上限、实际风险不超过预算，否则立即市价离场（`fw_invalid_stop:<原因>`）；成交价更优导致距离不足下限时按 `better_fill_policy` 处理（默认放宽到下限，可选立即离场或保留原止损） | 跳空穿过止损时按交易所实际成交价离场，亏损可能超过 1R |
+| 止损护栏 0.8%–3% | 按下单价检查；成交后按成交价再查：止损必须在成交价的正确一侧（多单低于、空单高于）、距离不超过上限、实际风险不超过预算，否则立即市价离场（`fw_invalid_stop:<原因>`）；成交价更优导致距离不足下限时按 `better_fill_policy` 处理（默认放宽到下限，可选立即离场或保留原止损） | 跳空穿过止损时按交易所实际成交价离场，亏损可能超过 1R |
 | 单笔风险 0.5% | 名义价值 = 权益 × 0.5% /（止损距离 + 往返成本 0.16% + 资金费预留），且 ≤ 1 倍权益 | 成本与资金费只是**预留**，不代表回测已按这个口径扣费 |
 | 强平距离 ≥ 3 × 止损距离 | 逐仓杠杆公式，维持保证金率用估计值，杠杆 ≤ 30 与交易所上限 | 维持保证金率未逐笔核对交易所档位表（HYPE 2.5% 为估计） |
 | 入场前检查 | 事件窗口、事件日历有效性、新闻守卫、总在险风险 ≤ 1.5%（挂单按下单数量和下单时生效的止损计入）、与已持仓或挂单的 30 日相关性 ≤ 0.8；有部分成交、未撤完的入场单时一律拒绝 | 检查本身出错一律拒绝入场；缺日线、缺止损信息也拒绝 |
@@ -49,7 +50,7 @@
 
 1. 按 `docs/STRATEGY_TEMPLATE.md` 写规格（想法 id、假设、证伪条件、参数表）。
 2. 修改 `user_data/strategies/MyStrategy.py`（删掉 `is_template = True`），或另建策略类并把配置的 `"strategy"` 改成它。
-3. 在 `populate_entry_trend()` 写 `enter_long = 1` 和 `fw_stop`（绝对止损价），可选 `fw_entry_cap`（限价上限）；可选 `take_profit_legs()`、`strategy_exit()`、`populate_exit_trend()`。
+3. 在 `populate_entry_trend()` 写 `enter_long = 1` 或 `enter_short = 1` 和 `fw_stop`（绝对止损价：多单在下方、空单在上方），可选 `fw_entry_cap`（最差可接受的入场价：多单是限价上限、空单是限价下限）；可选 `take_profit_legs()`、`strategy_exit()`、`populate_exit_trend()`。
 4. 不要覆盖 `advise_entry`、`custom_stake_amount`、`leverage`、`custom_stoploss`、`confirm_trade_entry`、`order_filled`、`adjust_trade_position`、`custom_exit`、`check_entry_timeout`、`bot_loop_start`；覆盖 `informative_pairs()` 时要合并 `super().informative_pairs()`（框架靠它订阅相关性检查要用的日线）。
 5. `pytest -q`、`s03ft research g0`，再进入回测。
 
@@ -106,6 +107,7 @@ freqtrade 回测按 K 线内成交假设，不模拟排队、冲击与完整的�
 | v2.0 | 改为策略留空的框架模板 |
 | v2.2 | 研究前端：想法登记、因子库、统计检验；加入 HYPE 与跨币种比较 |
 | v2.3–v2.5 | 新闻事件守卫（BlockBeats + Odaily，规则只看正文） |
+| v2.13 | freqtrade 升级到 2026.10（需要 Python ≥ 3.12）；支持多单与空单（止损、定仓、杠杆、止损穿越、分批止盈、相关性、风险记录、R、监控都按方向处理）；交易方向在配置里设置（`fw_trade_direction` 全局、`fw_pair_directions` 按交易对），默认多空都做；`s03ft doctor` 检查方向设置和监控交易对与白名单一致 |
 | v2.12 | 按第七轮审查修正：候选方案的风险完整性独立判定，手填离散度不能替代缺失的证据；复核比较最终 R（新增 `portfolio-verify`）；复盘 R 只用记录、估算单列并报告读不到的原因；登记顺序用登记簿行号；指纹路径跨平台一致 |
 | v2.11 | 按第六轮审查修正：R 未知的交易逐层清点、最多判“证据不足”（不再静默排除）；研究端 R 的分母改用回测时记录的初始风险，复盘端读 freqtrade 数据库；事后推算用策略实际的止损上下限；PBO 周网格首尾覆盖并核对守恒；版本指纹补上风险模块 |
 | v2.10 | 按第五轮审查修正：研究、组合回测、复盘的 R 共用同一口径（成交量 × 初始止损，不用兜底价）；`fw_stop_crossed`、`fw_invalid_stop` 计入 stopslip 压力与框架止损保护；监控读不到状态时保留计时并告警；PBO 改用组合回测的候选方案、只用开发区间；部分成交裸露规模的文档更正 |

@@ -7,8 +7,6 @@
 - 研究前端：找想法、筛因子、统计检验；
 - 由 OpenClaw agent 运营，以及一键部署脚本。
 
-方向配置 `trading_policy.direction` 支持 `both`（默认）、`long`、`short`；只影响新入场，同一合约不同时持有多空。币种统一在 `exchange.pair_whitelist` 增删，空列表禁止全部入场。详见 [2026.10 升级与双向规则](docs/UPGRADE_2026_10.md)。
-
 默认交易对是 BTC、ETH、SOL、BNB、HYPE 五个 USDT 永续，`dry_run = true`。默认策略是空白模板 `MyStrategy`：可以运行，但不会开任何仓位。
 
 > **风险提示**：本仓库是研究与流程工具，不构成投资建议，不保证收益。任何策略都必须先通过 G1–G8 验证门槛，实盘（关闭 dry_run）只能由你本人操作（G9）。
@@ -49,7 +47,7 @@
 | 需要 | 版本 / 说明 | 必须？ |
 |---|---|---|
 | Linux（服务器按 Ubuntu / Debian 写）或 macOS | — | 是 |
-| Python | 3.12 及以上 | 是 |
+| Python | **3.12 及以上**（freqtrade 2026.10 不再支持 3.11；Ubuntu 24.04 / Debian 13 自带 3.12+，Ubuntu 22.04 需另装） | 是 |
 | freqtrade | 2026.10（`pip install -e ".[trade]"` 会装这个版本） | 是 |
 | 网络 | 能访问 Binance 合约 API。所在地区访问不了时，本地试跑用 `user_data/config-test-okx.json`（OKX 公开数据） | 是 |
 | Binance API Key | 只勾选“读取”和“合约交易”，**不开提现**，限制服务器 IP；只在 dry-run 之后需要 | 后期 |
@@ -64,7 +62,7 @@
 git clone <你的仓库地址> freq-trader && cd freq-trader
 python3 -m venv .venv && source .venv/bin/activate
 pip install -e ".[trade,test]"                     # 安装 freqtrade 2026.10 和统一命令 s03ft
-pytest -q                                          # 约 145 个测试；没有本地行情数据时，少数回测测试会跳过
+pytest -q                                          # 约 350 个测试；没有本地行情数据时，少数回测测试会跳过
 
 # 本地试跑用 OKX 公开数据（不需要账号）；有 Binance 访问的话把配置换成 user_data/config.json
 export S03_FT_CONFIG=user_data/config-test-okx.json
@@ -87,7 +85,7 @@ freqtrade backtesting -c $S03_FT_CONFIG --strategy SmaCrossExample --strategy-pa
 
 | 文件 | 改什么 | 谁来改 | 默认 |
 |---|---|---|---|
-| `user_data/config.json`（部署后是 `/etc/s03/ft-config.json`） | `"strategy"`（你的策略类名）、`pair_whitelist`（交易对）、`max_open_trades`、`stake_currency` | 你 | `MyStrategy`；5 个交易对；最多 3 笔；`dry_run: true` |
+| `user_data/config.json`（部署后是 `/etc/s03/ft-config.json`） | `"strategy"`（你的策略类名）、`pair_whitelist`（交易对）、`fw_trade_direction` 与 `fw_pair_directions`（交易方向）、`max_open_trades`、`stake_currency` | 你 | `MyStrategy`；BTC、ETH、SOL、BNB、HYPE；多空都做（`both`）；最多 3 笔；`dry_run: true` |
 | `user_data/strategies/MyStrategy.py` | 你的策略 | 你 | 空白模板 |
 | `user_data/strategies/framework_base.py` 的 `FW_DEFAULTS` | 框架风险参数（单笔风险、总风险、杠杆上限、维持保证金估计）；也可以在策略的 `framework_params()` 里覆盖 | 你（谨慎） | 均为示例值 |
 | `/etc/s03/ft-trader.env` | Binance API Key、freqtrade API 账号（`install.sh` 生成模板） | 只能是你 | 空 |
@@ -97,7 +95,18 @@ freqtrade backtesting -c $S03_FT_CONFIG --strategy SmaCrossExample --strategy-pa
 | `/etc/s03/blockbeats.env` | BlockBeats API Key（只放这一个）；新闻守卫（与 Odaily 同时必需）和研究 MCP 共用 | 你 | 启用新闻守卫时必填 |
 | `/etc/s03/vibe-trading.env` | 只放大模型配置，绝不放交易所密钥 | 你 | 不填也能用因子库和行情工具 |
 
-**增减交易对**：同时改 `config.json` 的 `pair_whitelist` 和 `monitor/monitor.toml` 的 `pairs`。新币可以在 `framework_base.py` 的 `maint_margin_est` 里补维持保证金率（以 Binance 杠杆档位表为准），否则用 `_default` 估计值。
+**增减交易对**：
+1. 在 `config.json`（服务器上是 `/etc/s03/ft-config.json`）的 `exchange.pair_whitelist` 里删掉或追加交易对，写法是 `XXX/USDT:USDT`（Binance USDⓈ-M 永续）。
+2. 同步修改 `monitor/monitor.toml`（服务器上是 `/etc/s03/monitor.toml`）的 `pairs`，两边必须一致（`s03ft doctor` 会检查）。
+3. 下载新币的数据：`freqtrade download-data -c <配置> -p XXX/USDT:USDT --timeframes 1d 15m --trading-mode futures`（相关性检查需要日线）。
+4. 新币可以在 `framework_base.py` 的 `maint_margin_est` 里补维持保证金率（以 Binance 杠杆档位表为准），否则按 `_default`（2.5%，估计值）。
+5. 重启 freqtrade（`sudo systemctl restart s03-freqtrade`）和监控（`s03-ft-monitor`）。新币上线前同样要过研究流程和 dry-run。
+
+**交易方向**（v2.13，用户设定）：在同一个配置文件里设置，不需要改策略。
+- `"fw_trade_direction": "both"`：多单和空单都做（默认）；`"long"`：只做多；`"short"`：只做空。
+- `"fw_pair_directions": {"HYPE/USDT:USDT": "long"}`：按交易对覆盖（没写的交易对用 `fw_trade_direction`）。
+- 不允许的方向：策略的信号在生成时就被清掉，下单前框架再查一次；取值无效时机器人启动报错，入场检查一律拒绝。回测也按这个设置执行。
+- 策略里用 `enter_long` / `enter_short` 写信号，止损写在 `fw_stop`：多单在入场价下方，空单在上方。
 筛因子默认用跨币种比较，至少要 5 个币；少于 5 个时自动改用单币择时口径（时间序列 IC）。
 
 ## 5. 接入你的策略（3 步）
@@ -105,7 +114,7 @@ freqtrade backtesting -c $S03_FT_CONFIG --strategy SmaCrossExample --strategy-pa
 1. **写规格**：填 `docs/STRATEGY_TEMPLATE.md`，包括适用市场、入场信号、止损、仓位、离场、失效条件和对应的想法 id。
 2. **改策略**：编辑 `user_data/strategies/MyStrategy.py`。
    - 设置 `timeframe`。
-   - 在 `populate_entry_trend()` 里写 `enter_long = 1` 和 `fw_stop`（绝对止损价），按需写 `fw_entry_cap`。
+   - 在 `populate_entry_trend()` 里写 `enter_long = 1`（做多）或 `enter_short = 1`（做空）和 `fw_stop`（绝对止损价：多单在下方、空单在上方），按需写 `fw_entry_cap`（最差可接受的入场价）。允许的方向在配置里设（第 4 节）。
    - 按需实现 `take_profit_legs()`（分批止盈）和 `strategy_exit()`（策略自己的离场）。
    - **删掉 `is_template = True`**；改了类名就同步修改配置里的 `"strategy"`。
 3. **验证**：依次运行 `pytest -q` → `s03ft research g0`（前视偏差检查）→ 研究矩阵 → 统计检验（第 6 节）。
@@ -224,7 +233,8 @@ sudo -u openclaw s03ft doctor
 | `lab matrix` 报“没有逐笔文件” | 先 `s03ft research plan` 再 `run --job …`；只读清单里、当前版本、成功的任务（被排除的会列在 stderr） |
 | 统计结论总是“证据不足” | 笔数 < 100、没给 `--holdout-start`、缺压力方案或缺 DSR 数据时都会这样，按报告里列出的缺项补齐；不要降低门槛 |
 | dry-run 一直不开仓，日志“事件日历不可用” | 实盘默认要求事件日历：先 `systemctl start s03-events`；本地研究副本可设 `S03_EVENTS_REQUIRED=0` |
-| 交易以 `fw_invalid_stop:…` 离场 | 成交后止损无效（止损不低于成交价、超出上限、风险超预算或没有框架计划）：框架立即离场，原因写在日志 |
+| 交易以 `fw_invalid_stop:…` 离场 | 成交后止损无效（止损不在成交价的正确一侧——多单不低于、空单不高于成交价——超出上限、风险超预算或没有框架计划）：框架立即离场，原因写在日志 |
+| 只有多单（或只有空单） | 看配置的 `fw_trade_direction` 与 `fw_pair_directions`；`s03ft doctor` 会列出当前设置 |
 | `s03ft doctor` 提示配置写了 timeframe | 删掉配置里的 `timeframe`：它会覆盖策略周期（v2.5 及以前的配置写死了 1m） |
 | 某个币突然不再开新仓，日志里有 `news_block` | 新闻事件守卫（Odaily / BlockBeats）命中了这个币或交易所的重大事件（时长见 `docs/RESEARCH_LAB.md`）。用 `lab news blocks` 查看原因和到期时间；不要为了恢复交易去改规则 |
 | 守卫状态是 `stale` | 采集定时器 30 分钟没有更新（Key 失效、限额或网络）。交易程序已自动忽略守卫，修好采集后自动恢复 |

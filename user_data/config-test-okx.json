@@ -8,6 +8,8 @@
     "dry_run_wallet": 10000,
     "trading_mode": "futures",
     "margin_mode": "isolated",
+    "fw_trade_direction": "both",
+    "fw_pair_directions": {},
     "liquidation_buffer": 0.05,
     "strategy": "MyStrategy",
     "cancel_open_orders_on_exit": false,
@@ -60,8 +62,5 @@
     "bot_name": "s03",
     "internals": {
         "process_throttle_secs": 5
-    },
-    "trading_policy": {
-        "direction": "both"
     }
 }

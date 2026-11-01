@@ -140,3 +140,16 @@ def test_review_reads_the_strategy_stop_params(tmp_path):
     p, err = strategy_stop_params(str(d), "Wide")
     assert err is None and p["stop_max_pct"] == 5.0 and p["stop_min_pct"] == 0.8
     assert strategy_stop_params(str(d), "Nope")[0] is None
+
+
+@pytest.mark.parametrize("trade,expect_r,src", [
+    ({**_T, "is_short": True, "enter_tag": "fw|s=101|c=|t=1", "stop_loss_abs": 101.0, "profit_abs": -1.0}, -1.0, "stop_loss_abs"),
+    ({**_T, "is_short": True, "enter_tag": "fw|s=101|c=|t=1", "stop_loss_abs": 109.9, "profit_abs": -2.0}, -2.0, "plan"),   # 兜底价在上方
+    ({**_T, "is_short": True, "enter_tag": "fw|s=101|c=|t=1", "stop_loss_abs": 99.0, "profit_abs": -1.0}, -1.0, "plan"),     # 引擎止损在错的一侧：改用计划
+    ({**_T, "is_short": True, "enter_tag": "fw|s=100.5|c=|t=1", "stop_loss_abs": 109.9, "profit_abs": -0.8}, -1.0, "plan"),  # floor：0.8%
+])
+def test_short_r_uses_the_stop_above_entry(trade, expect_r, src):
+    """v2.13：空单的止损在入场价上方；兜底止损也在上方很远。"""
+    r, s = r_multiple(trade)
+    assert s == src and (r is None if expect_r is None else abs(r - expect_r) < 1e-9), (r, s)
+    assert r_multiple({**_T, "is_short": True, "enter_tag": "manual", "stop_loss_abs": 99.0})[1] == "unknown"   # 都不行：未知

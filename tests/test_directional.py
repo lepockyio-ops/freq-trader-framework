@@ -113,14 +113,14 @@ def test_legacy_plan_direction_and_unknown_side():
 def test_policy_add_remove_and_blacklist():
     s = strat()
     assert all(s.pair_enabled(c + "/USDT:USDT") for c in ("BTC", "ETH", "SOL", "BNB", "HYPE"))
-    s.config = {"exchange":{"pair_whitelist":["ADA/USDT:USDT"]}, "trading_policy":{"direction":"short"}}
+    s.config = {"exchange":{"pair_whitelist":["ADA/USDT:USDT"]}, "fw_trade_direction":"short"}
     assert s.pair_enabled("ADA/USDT:USDT") and not s.pair_enabled(PAIR)
     assert s.side_enabled("short") and not s.side_enabled("long")
     s.config["exchange"]["pair_blacklist"] = ["ADA/.*"]
     assert not s.pair_enabled("ADA/USDT:USDT")
     s.config["exchange"]["pair_whitelist"] = []
     assert not s.pair_enabled(PAIR)
-    s.config["trading_policy"]["direction"] = "shrot"
+    s.config["fw_trade_direction"] = "shrot"
     with pytest.raises(ValueError): s.side_enabled("short")
     assert not s.confirm_trade_entry(PAIR, "limit", 1., 100., "GTC", NOW, short_tag(), "short")
 

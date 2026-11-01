@@ -199,6 +199,34 @@ def strategy_info(research: bool = False) -> dict:
     return {"name": name, "file": str(found) if found else None, "is_template": is_tpl}
 
 
+DIRECTIONS = ("both", "long", "short")
+
+
+def trade_cfg_checks(add, cf: Path, monitor_toml: Path) -> None:
+    """交易方向与交易对（v2.13）：方向取值有效；按交易对的方向只能写白名单里的交易对；监控的交易对与白名单一致。"""
+    try:
+        cfg = json.loads(cf.read_text("utf-8"))
+    except (OSError, ValueError):
+        return
+    d = cfg.get("fw_trade_direction", "both")
+    per = cfg.get("fw_pair_directions") or {}
+    wl = list((cfg.get("exchange") or {}).get("pair_whitelist") or [])
+    bad = {k: v for k, v in per.items() if v not in DIRECTIONS}
+    add(f"{cf.name} 的交易方向有效（both / long / short）", d in DIRECTIONS and not bad,
+        f"默认 {d}；按交易对：{per or '无'}" + (f"；无效：{bad}" if bad else ""))
+    extra = [k for k in per if k not in wl]
+    add(f"{cf.name} 按交易对的方向只写了白名单里的交易对", not extra, f"不在白名单：{extra}" if extra else "")
+    add(f"{cf.name} 的交易对白名单不为空", bool(wl), ", ".join(wl))
+    try:
+        import tomllib
+
+        mp = list(tomllib.loads(monitor_toml.read_text("utf-8")).get("pairs") or [])
+    except (OSError, ValueError, ImportError):
+        return
+    add(f"监控的交易对与 {cf.name} 白名单一致（{monitor_toml.name}）", sorted(mp) == sorted(wl),
+        "" if sorted(mp) == sorted(wl) else f"只在白名单：{sorted(set(wl) - set(mp))}；只在监控：{sorted(set(mp) - set(wl))}")
+
+
 def cmd_doctor(a) -> int:
     checks = []
 
@@ -224,6 +252,7 @@ def cmd_doctor(a) -> int:
             continue
         add(f"{cf.name} 没有写 timeframe（周期以策略为准）", tf is None,
             f"配置写了 timeframe = {tf}，会覆盖策略里的周期：删掉这一行" if tf else "")
+        trade_cfg_checks(add, cf, Path("/etc/s03/monitor.toml") if not a.research else HOME / "monitor" / "monitor.example.toml")
     for f in ("monitor/events_calendar.py", "monitor/run_monitor.py", "research/matrix.py"):
         add(f"{f} 存在", (HOME / f).exists())
     if not a.research:

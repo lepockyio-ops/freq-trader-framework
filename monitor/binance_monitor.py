@@ -114,7 +114,7 @@ class FtClient:
 
 
 def positions_from_ft(trades: list[dict], require_exchange_stop: bool = True) -> list[PositionView]:
-    """把 freqtrade /status 的未平仓交易转成只读持仓视图（按 is_short 保留方向）。"""
+    """把 freqtrade /status 的未平仓交易转成只读持仓视图（多单与空单，v2.13）。"""
     out = []
     for t in trades:
         if not t.get("is_open"):
@@ -134,13 +134,14 @@ def positions_from_ft(trades: list[dict], require_exchange_stop: bool = True) ->
 
 
 def partial_entries_from_ft(trades: list[dict]) -> list[PartialEntryView]:
-    """有部分成交、仍挂着的入场单（多头入场 buy、空头入场 sell）。"""
+    """有部分成交、仍挂着的入场单（多单入场方向 buy，空单 sell；v2.13）。"""
     out = []
     for t in trades:
         if not t.get("is_open"):
             continue
+        side = "sell" if t.get("is_short") else "buy"
         for o in t.get("orders") or []:
-            if o.get("ft_order_side") == ("sell" if t.get("is_short") else "buy") and o.get("is_open") and float(o.get("filled") or 0) > 0:
+            if o.get("ft_order_side") == side and o.get("is_open") and float(o.get("filled") or 0) > 0:
                 ts = (o.get("order_timestamp") or time.time() * 1000) / 1000
                 out.append(PartialEntryView(coin_of(t["pair"]), float(o.get("filled") or 0), ts))
     return out

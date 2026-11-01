@@ -80,7 +80,7 @@ class PositionView:
     current_stop_px: float
     has_exchange_stop: bool
     since_ts: float                        # 入场成交时间（秒）
-    is_short: bool = False
+    is_short: bool = False                 # v2.13（freq-trader）：空单的止损在入场价上方
 
 
 @dataclass
@@ -277,10 +277,10 @@ class AlertEngine:
                                                 "有持仓但交易所端没有止损单（程序的风控层应已在处理）"))
                 else:
                     st.stop_missing_since = None
-            direction = -1 if p.is_short else 1
-            r_unit = direction * (p.entry_px - p.initial_stop_px)
+            sgn = -1.0 if p.is_short else 1.0       # 空单：止损在上方，价格上涨才接近止损
+            r_unit = sgn * (p.entry_px - p.initial_stop_px)
             if self._on("near_stop") and st.last_price and r_unit > 0:
-                dist_r = direction * (st.last_price - p.current_stop_px) / r_unit
+                dist_r = sgn * (st.last_price - p.current_stop_px) / r_unit
                 if 0 <= dist_r < self.cfg.near_stop_r:
                     out += self._emit(Alert(p.coin, "near_stop", SEV_INFO, round(dist_r, 3), self.cfg.near_stop_r, now,
                                             f"价格距离止损 {dist_r:.2f}R", {"stop_px": p.current_stop_px,

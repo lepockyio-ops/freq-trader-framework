@@ -13,7 +13,7 @@
 
 - **不索取、不输出、不写入任何密钥**：私钥、API 钱包、交易所 Key、token。需要时请用户自己写进服务器上的环境文件。
 - **不下真实订单，不签名，不广播交易**。不运行 `freqtrade trade`，也不直接调用 freqtrade REST API 的 forceenter / forceexit。
-- 不修改 `dry_run`、`pair_whitelist`、`max_open_trades`、`FW_DEFAULTS` 等交易配置；不恢复已暂停的交易；不批准 FreqAI 模型。
+- 不修改 `dry_run`、`pair_whitelist`、`fw_trade_direction`、`fw_pair_directions`、`max_open_trades`、`FW_DEFAULTS` 等交易配置；不恢复已暂停的交易；不批准 FreqAI 模型。
 - 不把想法改为 `approved`（`--by human` 只属于用户）。
 - 不为了让回测或检验“通过”而改阈值、删数据、挑区间、事后改样本外起点或删掉策略声明的压力方案；每换一次参数都是一次新的尝试，必须登记（`lab idea move --to backtesting`）。
 - 不改 `fwresearch/mcp_guard.py` 和 `deploy/openclaw/*.allow` 的白名单来放行交易、连接器或写文件类工具。
@@ -50,8 +50,8 @@
 
 **写一个新策略插件**
 
-1. 在 `user_data/strategies/` 新建策略，继承 `FrameworkStrategy`；在 `populate_entry_trend()` 写 `enter_long` 和 `fw_stop`（绝对止损价）。
-2. 止损距离不合规时由框架处理，策略不要自己放宽；不要覆盖 `advise_entry`、`custom_stake_amount`、`leverage`、`confirm_trade_entry`、`order_filled`、`custom_stoploss`、`adjust_trade_position`、`custom_exit`、`check_entry_timeout`、`bot_loop_start` 等框架回调；覆盖 `informative_pairs()` 时合并 `super().informative_pairs()`。
+1. 在 `user_data/strategies/` 新建策略，继承 `FrameworkStrategy`；在 `populate_entry_trend()` 写 `enter_long` / `enter_short` 和 `fw_stop`（绝对止损价：多单在下方、空单在上方）。
+2. 止损距离不合规时由框架处理，策略不要自己放宽；不要覆盖 `advise_entry`、`custom_stake_amount`、`leverage`、`confirm_trade_entry`、`order_filled`、`custom_stoploss`、`adjust_trade_position`、`custom_exit`、`check_entry_timeout`、`bot_loop_start`、`bot_start` 等框架回调；覆盖 `informative_pairs()` 时合并 `super().informative_pairs()`。
 3. 在 `tests/` 加测试（参考 `tests/test_framework.py`），然后运行 `pytest -q` 和 `s03ft research g0`。
 4. 填 `docs/STRATEGY_TEMPLATE.md`，写明想法 id。改动以补丁或 PR 形式交给用户审阅。
 
@@ -75,7 +75,3 @@
 
 - 两个模板（hyper-trader、freq-trader）共用 `fwresearch/`。改了它，就要同步到另一个仓库，并在两边都运行 `pytest -q`。
 - 提交信息写明改了什么、为什么、测试结果；不要提交 `user_data/data/`、`user_data/config-private.json`、`research/results/`、`research/lab/`、`*.env`。
-
-## v2.13 用户授权的能力扩展
-
-2026-11-01 用户明确要求 Freqtrade 2026.10、五币及可配置币种、多空方向。本版共享模板支持这些能力；用户通过 exchange.pair_whitelist 和 trading_policy.direction 自行选择。旧文的 enter_long 示例也可为 enter_short，绝对止损须按方向。此变更不授权改生产私有配置、风险阈值、启用实盘或下单。

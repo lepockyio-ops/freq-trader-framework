@@ -26,7 +26,7 @@ def test_r_multiple_uses_entry_fill_and_stop_loss_abs():
 
 def test_trades_frame_schema():
     df = matrix.trades_frame("SOL-2024-base", None)
-    assert list(df.columns) == ["job", "coin", "year", "variant", "entry_time", "time", "R", "pnl", "risk", "risk_source"]
+    assert list(df.columns) == ["job", "coin", "year", "variant", "entry_time", "time", "R", "pnl", "risk", "risk_source", "is_short"]
 
 
 def _s03ft(*args, env=None):

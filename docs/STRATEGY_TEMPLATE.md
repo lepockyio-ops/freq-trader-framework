@@ -11,7 +11,7 @@
 | 策略名称 / 版本 | |
 | 作者 / 日期 | |
 | 一句话描述 | （例：日线上升趋势中，15 分钟回调结束时突破入场） |
-| 交易方向 | both / long / short（trading_policy.direction，用户设定） |
+| 交易方向 | 多 / 空 / 多空（策略写 `enter_long`、`enter_short`；账户实际允许的方向由配置 `fw_trade_direction`、`fw_pair_directions` 决定） |
 | 标的 | （例：BTC、ETH；写明为什么选它们） |
 | 信号周期 / 背景周期 | （例：15m / 1d） |
 | 预期持有时间 | |
@@ -111,8 +111,8 @@ v2.8 同时加了上限 50%（样本内至少一半），并按回测时间段�
 | --- | --- |
 | 1 信号周期 | `timeframe`、`startup_candle_count` |
 | 3 市场状态筛选 | `populate_indicators()`（背景周期用 `@informative("1d")`） |
-| 4 入场信号 | `populate_entry_trend()`：`enter_long = 1`，`fw_entry_cap` = 限价上限 |
-| 5 止损 | `populate_entry_trend()`：`fw_stop` = 绝对止损价；护栏参数在 `framework_params` |
+| 4 入场信号 | `populate_entry_trend()`：`enter_long = 1` 或 `enter_short = 1`；`fw_entry_cap` = 最差可接受的入场价（多单上限、空单下限） |
+| 5 止损 | `populate_entry_trend()`：`fw_stop` = 绝对止损价（多单在入场价下方、空单在上方）；护栏参数在 `framework_params` |
 | 6 仓位与风险 | `framework_params`（覆盖 `framework_base.FW_DEFAULTS`） |
 | 7 止盈与离场 | `take_profit_legs()`、`strategy_exit()`、`populate_exit_trend()` |
 | 9 参数表 | 类属性或 freqtrade 的 hyperopt 参数 |
