@@ -1,11 +1,13 @@
-# freq-trader：freqtrade 自动交易框架（Binance USDⓈ-M 永续 · 模板版 v2.12 · 策略留空）
+# freq-trader：freqtrade 自动交易框架（Binance USDⓈ-M 永续 · 模板版 v2.13 · 策略留空）
 
-这是一个基于 [freqtrade](https://www.freqtrade.io/) 2026.9、**不含交易策略的框架**，交易规则由你写成一个继承 `FrameworkStrategy` 的策略接入。框架已经提供：
+这是一个基于 [freqtrade](https://www.freqtrade.io/) 2026.10、**不含交易策略的框架**，交易规则由你写成一个继承 `FrameworkStrategy` 的策略接入。框架已经提供：
 
 - 风控：止损护栏、按风险定仓、逐仓杠杆与强平距离、事件窗口、总风险与相关性、交易所端止损、Protections；
 - 监控告警、官方事件日历、复盘指标；
 - 研究前端：找想法、筛因子、统计检验；
 - 由 OpenClaw agent 运营，以及一键部署脚本。
+
+方向配置 `trading_policy.direction` 支持 `both`（默认）、`long`、`short`；只影响新入场，同一合约不同时持有多空。币种统一在 `exchange.pair_whitelist` 增删，空列表禁止全部入场。详见 [2026.10 升级与双向规则](docs/UPGRADE_2026_10.md)。
 
 默认交易对是 BTC、ETH、SOL、BNB、HYPE 五个 USDT 永续，`dry_run = true`。默认策略是空白模板 `MyStrategy`：可以运行，但不会开任何仓位。
 
@@ -47,8 +49,8 @@
 | 需要 | 版本 / 说明 | 必须？ |
 |---|---|---|
 | Linux（服务器按 Ubuntu / Debian 写）或 macOS | — | 是 |
-| Python | 3.11 及以上 | 是 |
-| freqtrade | 2026.9（`pip install -e ".[trade]"` 会装这个版本） | 是 |
+| Python | 3.12 及以上 | 是 |
+| freqtrade | 2026.10（`pip install -e ".[trade]"` 会装这个版本） | 是 |
 | 网络 | 能访问 Binance 合约 API。所在地区访问不了时，本地试跑用 `user_data/config-test-okx.json`（OKX 公开数据） | 是 |
 | Binance API Key | 只勾选“读取”和“合约交易”，**不开提现**，限制服务器 IP；只在 dry-run 之后需要 | 后期 |
 | OpenClaw | 2026.10.8 已验证；**需要 Node ≥ 24.22.1 或 ≥ 26.12.1** | 部署时 |
@@ -61,7 +63,7 @@
 ```bash
 git clone <你的仓库地址> freq-trader && cd freq-trader
 python3 -m venv .venv && source .venv/bin/activate
-pip install -e ".[trade,test]"                     # 安装 freqtrade 2026.9 和统一命令 s03ft
+pip install -e ".[trade,test]"                     # 安装 freqtrade 2026.10 和统一命令 s03ft
 pytest -q                                          # 约 145 个测试；没有本地行情数据时，少数回测测试会跳过
 
 # 本地试跑用 OKX 公开数据（不需要账号）；有 Binance 访问的话把配置换成 user_data/config.json

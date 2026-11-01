@@ -16,7 +16,7 @@
 
 | 项目 | 当前设置 | 标签 |
 |---|---|---|
-| 交易所 | Binance USDⓈ-M 永续，逐仓，只做多 | 用户设定 |
+| 交易所 | Binance USDⓈ-M 永续，逐仓，可配置 both / long / short | 用户设定 |
 | 交易对 | BTC、ETH、SOL、BNB、HYPE（`pair_whitelist`） | 用户设定 |
 | 同时持仓 | `max_open_trades = 3` | 示例值 |
 | 运行模式 | `dry_run: true`（改为 false 属于 G9，只能由你操作） | 用户设定 |
@@ -116,5 +116,5 @@ freqtrade 回测按 K 线内成交假设，不模拟排队、冲击与完整的�
 
 ## 来源
 
-- freqtrade 2026.9 文档：[Strategy callbacks](https://www.freqtrade.io/en/stable/strategy-callbacks/)、[Backtesting](https://www.freqtrade.io/en/stable/backtesting/)、[Configuration](https://www.freqtrade.io/en/stable/configuration/)
+- freqtrade 2026.10 文档：[Strategy callbacks](https://www.freqtrade.io/en/stable/strategy-callbacks/)、[Backtesting](https://www.freqtrade.io/en/stable/backtesting/)、[Configuration](https://www.freqtrade.io/en/stable/configuration/)
 - 外部审查报告（2026-10-30，审计提交 `eb44d2b`），修正记录见 git 提交 v2.6

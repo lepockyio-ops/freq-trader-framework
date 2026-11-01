@@ -208,9 +208,9 @@ def cmd_doctor(a) -> int:
     try:
         import freqtrade  # noqa: F401
         from freqtrade import __version__ as ftv
-        add("freqtrade 已安装且为 2026.9", ftv == "2026.9", ftv)
+        add("freqtrade 已安装且为 2026.10", ftv == "2026.10", ftv)
     except ImportError:
-        add("freqtrade 已安装且为 2026.9", a.research, "未安装（运维与告警 agent 不需要）")
+        add("freqtrade 已安装且为 2026.10", a.research, "未安装（运维与告警 agent 不需要）")
     info = strategy_info(research=a.research)
     add("策略文件存在", info["file"] is not None, info.get("file") or f"找不到策略 {info['name']}")
     add("已配置自己的策略（不是空白模板）", info["file"] is not None and not info["is_template"],

@@ -50,35 +50,39 @@ def effective_plan_stop(t: dict, stop_min_pct: float = STOP_MIN_PCT, stop_max_pc
     """计划止损按下单价过护栏（与框架 _order_stop 相同；能成交说明下单时止损合规，距离不足下限只能是 floor 模式）。"""
     sp = plan_stop(t.get("enter_tag"))
     px = float(t.get("open_rate_requested") or t.get("open_rate") or 0)
-    if sp is None or px <= 0 or sp >= px:
+    direction = -1 if t.get("is_short") else 1
+    if sp is None or px <= 0 or direction * (px - sp) <= 0:
         return None
-    dist = (px - sp) / px * 100
+    dist = direction * (px - sp) / px * 100
     if dist > stop_max_pct + 1e-9:
         return None
     if dist < stop_min_pct:
-        sp = px * (1 - stop_min_pct / 100)
+        sp = px * (1 - direction * stop_min_pct / 100)
     return sp
 
 
 def initial_stop(t: dict, stop_min_pct: float = STOP_MIN_PCT, stop_max_pct: float = STOP_MAX_PCT) -> tuple[float | None, str]:
     """（初始止损价, 来源）。来源：stop_loss_abs / plan / unknown。"""
     fill = float(t.get("open_rate") or 0)
+    direction = -1 if t.get("is_short") else 1
     if fill <= 0:
         return None, "unknown"
     eff = effective_plan_stop(t, stop_min_pct, stop_max_pct)
     lowest = None
     if eff is not None:                                       # 成交价更优、按成交价算距离不足下限时，框架可能放宽到下限 + 0.02
-        lowest = min(eff, fill * (1 - (stop_min_pct + WIDEN_EXTRA_PCT) / 100))
+        floor = fill * (1 - direction * (stop_min_pct + WIDEN_EXTRA_PCT) / 100)
+        lowest = max(eff, floor) if direction == -1 else min(eff, floor)
     sl = t.get("stop_loss_abs")
     if sl is not None:
         sl = float(sl)
-        dist = (fill - sl) / fill * 100
-        ok = 0 < dist <= stop_max_pct + WIDEN_EXTRA_PCT + 1e-9 and (lowest is None or sl >= lowest * (1 - TOL))
+        dist = direction * (fill - sl) / fill * 100
+        inside = lowest is None or ((sl <= lowest * (1 + TOL)) if direction == -1 else (sl >= lowest * (1 - TOL)))
+        ok = 0 < dist <= stop_max_pct + WIDEN_EXTRA_PCT + 1e-9 and inside
         if ok:
             return sl, "stop_loss_abs"
-    if eff is not None and eff < fill:
-        dist = (fill - eff) / fill * 100
-        return (eff if dist >= stop_min_pct - 1e-6 else fill * (1 - (stop_min_pct + WIDEN_EXTRA_PCT) / 100)), "plan"
+    if eff is not None and direction * (fill - eff) > 0:
+        dist = direction * (fill - eff) / fill * 100
+        return (eff if dist >= stop_min_pct - 1e-6 else fill * (1 - direction * (stop_min_pct + WIDEN_EXTRA_PCT) / 100)), "plan"
     return None, "unknown"
 
 
@@ -95,7 +99,7 @@ def initial_risk(t: dict, stop_min_pct: float = STOP_MIN_PCT, stop_max_pct: floa
     stop, src = initial_stop(t, stop_min_pct, stop_max_pct)
     if stop is None:
         return None, "unknown"
-    risk = entry_filled_amount(t) * (float(t["open_rate"]) - stop)
+    risk = entry_filled_amount(t) * (-1 if t.get("is_short") else 1) * (float(t["open_rate"]) - stop)
     return (risk, src) if risk > 0 else (None, "unknown")
 
 

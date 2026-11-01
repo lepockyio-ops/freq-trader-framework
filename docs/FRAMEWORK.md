@@ -1,5 +1,9 @@
 # freq-trader 框架说明（Binance USDⓈ-M 永续 · freqtrade · 策略留空）
 
+## v2.13 双向规则
+
+[升级规格与配置](UPGRADE_2026_10.md) 是双向行为的当前说明。下文旧版本沿用多头示例：空头的止损在入场上方、价格上穿止损时退出、最低卖价约束、获利向下；所有距离与初始风险按方向计算。相关性使用绝对值，保留原阈值。
+
 ## 框架与策略的分工
 
 | 由框架完成（`user_data/strategies/framework_base.py` 与运维工具；策略只要不覆盖框架回调就不能绕过） | 由你的策略完成（继承 `FrameworkStrategy`） |
@@ -7,7 +11,7 @@
 | 入场计划随订单保存（`enter_tag`）：定仓、杠杆、入场检查、成交后止损只读这一份计划 | `timeframe`（周期只由策略决定，配置里不要写）、`startup_candle_count` |
 | 止损护栏：按下单价检查距离在 `stop_min_pct`–`stop_max_pct`；成交后再按成交价检查，不合格立即离场 | |
 | 仓位：单笔风险（含成本与资金费预留）、名义价值 ≤ 1 倍权益 | `populate_indicators()`：指标 |
-| 杠杆：强平距离 ≥ 3 倍止损距离，且不超过上限与交易所上限 | `populate_entry_trend()`：`enter_long`、`fw_stop`（绝对止损价）、可选 `fw_entry_cap` |
+| 杠杆：强平距离 ≥ 3 倍止损距离，且不超过上限与交易所上限 | `populate_entry_trend()`：`enter_long` / `enter_short`、`fw_stop`（绝对止损价）、可选 `fw_entry_cap` |
 | 入场前检查：事件窗口、事件日历有效性、新闻守卫、总在险风险、相关性；检查本身出错一律拒绝 | 可选 `take_profit_legs()`：分批止盈（R 倍数、比例、标签） |
 | 交易所端止损（按绝对价格）、最长持有天数、Protections（连亏暂停、日/周故障保护、冷却） | 可选 `strategy_exit()`、`populate_exit_trend()`：离场 |
 | 监控告警、官方事件日历、复盘指标、研究矩阵、`s03ft` 命令、OpenClaw 运维、一键部署 | 可选 `framework_params`：覆盖框架默认值 |

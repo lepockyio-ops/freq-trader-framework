@@ -75,3 +75,7 @@
 
 - 两个模板（hyper-trader、freq-trader）共用 `fwresearch/`。改了它，就要同步到另一个仓库，并在两边都运行 `pytest -q`。
 - 提交信息写明改了什么、为什么、测试结果；不要提交 `user_data/data/`、`user_data/config-private.json`、`research/results/`、`research/lab/`、`*.env`。
+
+## v2.13 用户授权的能力扩展
+
+2026-11-01 用户明确要求 Freqtrade 2026.10、五币及可配置币种、多空方向。本版共享模板支持这些能力；用户通过 exchange.pair_whitelist 和 trading_policy.direction 自行选择。旧文的 enter_long 示例也可为 enter_short，绝对止损须按方向。此变更不授权改生产私有配置、风险阈值、启用实盘或下单。

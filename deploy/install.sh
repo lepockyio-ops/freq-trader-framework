@@ -3,7 +3,7 @@
 #
 #   sudo bash deploy/install.sh [--openclaw-user openclaw] [--with-vibe-trading] [--with-news] [--with-blockbeats] [--prefix /tmp/fakeroot]
 #
-# 做的事：建用户与目录 → 安装 freqtrade 2026.9 与 s03ft → 生成配置与随机 token（只在文件不存在时）
+# 做的事：建用户与目录 → 安装 freqtrade 2026.10 与 s03ft → 生成配置与随机 token（只在文件不存在时）
 #        → 安装 systemd、sudoers、小工具 → 放置 4 个 OpenClaw agent 的工作区与技能 → enable 定时器 → 自检
 # 不做的事：不填交易所 API Key、不启动 freqtrade、不改 dry_run、不修改你的 OpenClaw 主配置。
 # --with-vibe-trading：另建 /opt/s03/vt-venv 安装 Vibe-Trading（研究前端找想法用，经 mcp-guard 白名单代理，只给 s03-research）。

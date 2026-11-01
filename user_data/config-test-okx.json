@@ -60,5 +60,8 @@
     "bot_name": "s03",
     "internals": {
         "process_throttle_secs": 5
+    },
+    "trading_policy": {
+        "direction": "both"
     }
 }
