@@ -28,7 +28,7 @@ def gate_status(ft: FtClient, journal: Journal) -> dict:
     alerts = [r for r in journal.read() if r.get("kind") == "alert"][-20:]
     return {
         "state": cfg.get("state"), "dry_run": cfg.get("dry_run"), "runmode": cfg.get("runmode"),
-        "positions": [{"pair": t.get("pair"), "open_rate": t.get("open_rate"),
+        "positions": [{"pair": t.get("pair"), "is_short": bool(t.get("is_short")), "open_rate": t.get("open_rate"),
                        "stop_loss_abs": t.get("stop_loss_abs"), "profit_pct": t.get("profit_pct"),
                        "exchange_stop": any(o.get("ft_order_side") == "stoploss" and o.get("is_open")
                                             for o in t.get("orders") or [])}

@@ -4,6 +4,7 @@ import json
 import shutil
 import stat
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -11,7 +12,8 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 
 
-@pytest.mark.skipif(shutil.which("bash") is None, reason="需要 bash")
+@pytest.mark.skipif(sys.platform == "win32" or shutil.which("bash") is None,
+                    reason="Linux 部署测试需要 POSIX 文件权限与可运行的 bash；Windows 应在 Linux CI 中运行此项")
 def test_install_fake_root(tmp_path):
     fr = tmp_path / "root"
     run = lambda: subprocess.run(["bash", str(ROOT / "deploy" / "install.sh"), "--prefix", str(fr)],  # noqa: E731

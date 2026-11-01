@@ -70,8 +70,8 @@ def strat(params=None, open_trades=(), signal_rows=None, closed_trades=(), confi
     return s
 
 
-def tag(stop, cap=None, user=""):
-    return F.encode_plan(stop, cap, NOW - timedelta(minutes=15), user)
+def tag(stop, cap=None, user="", side="long"):
+    return F.encode_plan(stop, cap, NOW - timedelta(minutes=15), user, side=side)
 
 
 def sized_amount(s, rate, stop):
@@ -591,8 +591,8 @@ def test_guarded_stop_short_side():
 
 
 def short_sized(s, rate, stop):
-    lev = s.leverage("BTC/USDT:USDT", NOW, rate, 10, 75, tag(stop), "short")
-    stake = s.custom_stake_amount("BTC/USDT:USDT", NOW, rate, 0, 0, 1e9, lev, tag(stop), "short")
+    lev = s.leverage("BTC/USDT:USDT", NOW, rate, 10, 75, tag(stop, side="short"), "short")
+    stake = s.custom_stake_amount("BTC/USDT:USDT", NOW, rate, 0, 0, 1e9, lev, tag(stop, side="short"), "short")
     return stake * lev / rate, lev
 
 
@@ -603,7 +603,7 @@ def test_short_sizing_leverage_and_entry_price_mirror_long():
     assert abs(amt_s - amt_l) < 1e-9 and lev_s == lev_l                       # 同样 1% 止损：同样的仓位与杠杆
     assert amt_s * 1.0 <= EQUITY * 0.005 + 1e-9
     assert s.custom_stake_amount("BTC/USDT:USDT", NOW, 100.0, 100, 0, 1e9, 10, tag(99.0), "short") == 0   # 空单止损在下方
-    t = tag(101.0, cap=99.9)                                                   # 空单的 fw_entry_cap 是限价下限
+    t = tag(101.0, cap=99.9, side="short")                                                   # 空单的 fw_entry_cap 是限价下限
     assert s.custom_entry_price("BTC/USDT:USDT", None, NOW, 99.5, t, "short") == 99.9
     assert s.custom_entry_price("BTC/USDT:USDT", None, NOW, 100.2, t, "short") == 100.2
 
@@ -611,18 +611,18 @@ def test_short_sizing_leverage_and_entry_price_mirror_long():
 def test_short_confirm_bind_and_stop_handling():
     s = strat()
     amt, _ = short_sized(s, 100.0, 101.0)
-    assert s.confirm_trade_entry("BTC/USDT:USDT", "limit", amt, 100.0, "GTC", NOW, tag(101.0), "short") is True
-    assert s.confirm_trade_entry("BTC/USDT:USDT", "limit", amt, 101.5, "GTC", NOW, tag(101.0), "short") is False  # 下单价高于止损
-    t = real_trade("filled", qty=amt, enter_tag=tag(101.0), is_short=True)
+    assert s.confirm_trade_entry("BTC/USDT:USDT", "limit", amt, 100.0, "GTC", NOW, tag(101.0, side="short"), "short") is True
+    assert s.confirm_trade_entry("BTC/USDT:USDT", "limit", amt, 101.5, "GTC", NOW, tag(101.0, side="short"), "short") is False  # 下单价高于止损
+    t = real_trade("filled", qty=amt, enter_tag=tag(101.0, side="short"), is_short=True)
     assert s._bind_stop(t) == 101.0 and abs(t.get_custom_data("fw_init_risk") - amt * 1.0) < 1e-9
     assert s._open_risk([t]) == amt * 1.0
     sl = s.custom_stoploss(t.pair, t, NOW, 100.0, 0.0, False)
     assert sl is not None and abs(sl - 0.01 * 10) < 1e-9                      # 1% × 10 倍杠杆
-    better = real_trade("filled", qty=amt, enter_tag=tag(101.0), is_short=True, price=100.5)   # 空单成交价更高 = 更优
+    better = real_trade("filled", qty=amt, enter_tag=tag(101.0, side="short"), is_short=True, price=100.5)   # 空单成交价更高 = 更优
     better.open_rate_requested = 100.0
     sp = s._bind_stop(better)
     assert sp is not None and (sp - 100.5) / 100.5 * 100 >= 0.8 and better.get_custom_data("stop_widened")
-    gap = real_trade("filled", qty=amt, enter_tag=tag(101.0), is_short=True, price=101.5)      # 跳空成交在止损之上
+    gap = real_trade("filled", qty=amt, enter_tag=tag(101.0, side="short"), is_short=True, price=101.5)      # 跳空成交在止损之上
     gap.open_rate_requested = 100.0
     assert s._bind_stop(gap) is None and gap.get_custom_data("fw_invalid") == "stop_not_above_fill"
 
@@ -635,7 +635,7 @@ def test_short_confirm_bind_and_stop_handling():
 def test_short_stop_crossed(engine_stop, rate, expect):
     s = strat()
     amt, _ = short_sized(s, 100.0, 101.0)
-    t = real_trade("filled", qty=amt, enter_tag=tag(101.0), is_short=True)
+    t = real_trade("filled", qty=amt, enter_tag=tag(101.0, side="short"), is_short=True)
     t.stop_loss = engine_stop
     assert s._bind_stop(t) == 101.0
     if rate >= 101.0:
@@ -648,7 +648,7 @@ def test_short_take_profit_triggers_below_entry():
     S.take_profit_legs = lambda self, tr: [(2.0, 0.5, "tp_2R")]
     try:
         amt, _ = short_sized(s, 100.0, 101.0)
-        t = real_trade("filled", qty=amt, enter_tag=tag(101.0), is_short=True)
+        t = real_trade("filled", qty=amt, enter_tag=tag(101.0, side="short"), is_short=True)
         args = (0, 0, 1e9, 98.0, 98.0, 0.0, 0.0)
         assert s.adjust_trade_position(t, NOW, 98.5, 0.0, *args[1:]) is None           # 1.5R：还没到
         out = s.adjust_trade_position(t, NOW, 97.9, 0.0, *args[1:])                     # 2.1R：平一半
@@ -679,7 +679,7 @@ def test_correlation_is_direction_aware():
 def test_direction_setting_gates_entries(config, side, pair, ok):
     s = strat(config=config)
     stop = 101.0 if side == "short" else 99.0
-    assert s.confirm_trade_entry(pair, "limit", 1.0, 100.0, "GTC", NOW, tag(stop), side) is ok
+    assert s.confirm_trade_entry(pair, "limit", 1.0, 100.0, "GTC", NOW, tag(stop, side=side), side) is ok
 
 
 def test_direction_setting_clears_disallowed_signals_and_is_validated_at_start():
