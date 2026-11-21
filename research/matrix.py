@@ -182,7 +182,8 @@ def repo_modules() -> list[Path]:
 def fingerprint_files() -> list[str]:
     """版本指纹覆盖的代码文件（固定清单，不随本次导入了什么而变）。v2.11 补上 monitor/trade_risk.py（外部审查 v2.10 P1-3）；
     测试 test_fingerprint_covers_every_imported_repo_module 检查研究流程导入的仓库内模块都在清单里。"""
-    code = [Path("user_data/strategies/framework_base.py"), Path("research/matrix.py"), Path(CONFIG), Path("monitor/trade_risk.py")]
+    code = [Path("user_data/strategies/framework_base.py"), Path("user_data/strategies/fw_assets.py"),
+            Path("user_data/strategies/fw_sessions.py"), Path("research/matrix.py"), Path(CONFIG), Path("monitor/trade_risk.py")]
     code += list(Path("user_data/strategies").glob("*.py"))
     if os.environ.get("FW_STRATEGY_PATH"):
         code += list(Path(os.environ["FW_STRATEGY_PATH"]).glob("*.py"))

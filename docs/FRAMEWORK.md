@@ -47,6 +47,18 @@ Deflated Sharpe、PBO）。找想法可选接入 Vibe-Trading，经 `mcp-guard` 
 - **交易方向设置（v2.13，用户设定）**：配置 `fw_trade_direction`（`both` / `long` / `short`，默认 `both`）和 `fw_pair_directions`（按交易对覆盖）。
   `advise_entry` 清掉不允许方向的信号（回测与实盘一致），`confirm_trade_entry` 再查一次；取值无效时 `bot_start` 报错、入场检查拒绝。
   子类覆盖 `bot_start` 时要调用 `super().bot_start()`。
+- **资产类别（v2.14，`fw_assets.py`、`fw_sessions.py`）**：配置 `fw_asset_classes` 把交易对归到类别（例如 `us_equity`）。
+  `confirm_trade_entry` 在事件窗口之后检查：交易所标为 TradFi 却未声明 → 拒绝；类别日历休市、开盘 / 收盘缓冲内 → 拒绝；
+  个股事件文件不可用（`events_required`，回测除外）或在事件窗口内 → 拒绝。`custom_exit` 在止损检查之后、`max_hold` 之前：
+  `fw_session_close`（每日收盘前）、`fw_session_gap`（长假前，或已经身处超过 24 小时的休市）、`fw_equity_event:<类型>`（事件前）。
+  定仓、杠杆、止损护栏、成交绑定、风险记录、最长持有天数都用 `fw_for(pair)`：框架参数 + 类别 `params`，只允许更严格（`STRICTER`），
+  放宽时 `bot_start` 报错、入场检查拒绝。日历是接口：`fw_sessions.register_calendar(name, factory)` 注册新市场（例如港股），
+  `NyseCalendar` 用 `zoneinfo` 处理夏令时，规则与 NYSE 公布的 2026–2028 休市 / 提前收盘表逐日核对（`tests/test_sessions.py`）。
+  TradFi 的识别（`fw_assets.TRADFI_MARKERS`，可用配置 `fw_tradfi_markers` 整个替换）：OKX `instCategory` 不是 1（3 = 股票、4 = 商品，已核验）；
+  Hyperliquid `hip3 = true`（第三方部署的 HIP-3 市场一律要求声明，已核验）；Binance `contractType` 含 TRADIFI（来源方观点，未直接核验）；`underlyingType` 兜底（模型推断）。
+  个股事件按代码匹配，HIP-3 的部署方前缀会去掉（`XYZ-TSLA` 也匹配 `TSLA`）。
+- **模拟专用配置（v2.15）**：配置里 `"fw_sim_only": true` 时，`bot_start` 在实盘模式或 `dry_run = false` 时报错，机器人不能启动。
+  `user_data/config-sim-{binance,okx,hyperliquid}.json` 都带这个标记，由 `s03ft sim` 使用（`s03ft/sim.py`）。
 - **框架止损保护（v2.10）**：freqtrade 的 StoplossGuard 只统计 `stop_loss`、`stoploss_on_exchange`、`trailing_stop_loss`、`liquidation`，
   框架以 `custom_exit` 发出的 `fw_stop_crossed`、`fw_invalid_stop:*` 不计数。框架在入场检查里按同样的参数（`stop_guard_trades` 6 次、
   `stop_guard_lookback_min` 7 天、`stop_guard_duration_min` 1 天，示例值，与 protections 共用）把两类合并计数：最近一笔止损类亏损离场

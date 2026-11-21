@@ -108,3 +108,43 @@ def test_freqtrade_backtest_smoke(tmp_path, strategy, path, expect_trades, direc
     assert init["enter_tag"].str.startswith("fw|").all()                   # 计划随订单保存
     # 周期以策略为准（15m）：入场发生在 15 分钟 K 线的开盘时刻，说明配置没有把它改成 1m
     assert (pd.to_datetime(init["open_date"]).dt.minute % 15 == 0).all()
+
+
+@pytest.mark.skipif(shutil.which("freqtrade") is None or not DATA.exists(), reason="需要 freqtrade 与本地 OKX 测试数据")
+def test_freqtrade_backtest_asset_class_session(tmp_path):
+    """v2.14：把 BTC 声明成 us_equity（NYSE 常规时段、开盘 / 收盘各 15 分钟缓冲、长假前平仓），用真实 freqtrade 回测检查：
+    每笔入场都在 NYSE 交易时段的缓冲之内，长假（周末）前都平掉了；没声明的 SOL 不受影响。"""
+    import sys as _sys
+
+    _sys.path.insert(0, str(ROOT / "user_data" / "strategies"))
+    from fw_sessions import NyseCalendar
+
+    cfg = json.loads((ROOT / "user_data" / "config-test-okx.json").read_text("utf-8"))
+    cls = cfg["fw_asset_classes"]["us_equity"]
+    cls.update({"pairs": ["BTC/USDT:USDT"], "events_required": False, "flat_before_gap": True, "flat_before_gap_min": 30})
+    (tmp_path / "cfg.json").write_text(json.dumps(cfg), "utf-8")
+    cmd = ["freqtrade", "backtesting", "-c", str(tmp_path / "cfg.json"), "--strategy", "SmaCrossExample",
+           "--strategy-path", "examples/strategies", "--timerange", "20261005-20261026", "-p", "SOL/USDT:USDT",
+           "BTC/USDT:USDT", "--export", "trades", "--backtest-directory", str(tmp_path), "--cache", "none"]
+    if os.environ.get("S03_FT_EXTRA_CONFIG"):
+        cmd += ["-c", os.environ["S03_FT_EXTRA_CONFIG"]]
+    r = subprocess.run(cmd, cwd=ROOT, capture_output=True, text=True, env={**os.environ, "S03_EVENTS_REQUIRED": "0"})
+    assert r.returncode == 0, r.stderr[-2000:]
+    from freqtrade.data.btanalysis import load_backtest_data
+
+    t = load_backtest_data(tmp_path)
+    btc, sol = t[t["pair"] == "BTC/USDT:USDT"], t[t["pair"] == "SOL/USDT:USDT"]
+    assert len(btc) > 0 and len(sol) > 0
+    cal = NyseCalendar()
+    for _, row in btc.iterrows():
+        st = cal.status(pd.Timestamp(row["open_date"]).to_pydatetime())
+        assert st.is_open and st.minutes_since_open >= 15 and st.minutes_to_close > 15, row["open_date"]
+        if st.gap_after_close_days > 1:
+            assert st.minutes_to_close > 30, row["open_date"]
+        x = cal.status(pd.Timestamp(row["close_date"]).to_pydatetime())
+        assert not (not x.is_open and x.next_open is not None
+                    and (x.next_open - pd.Timestamp(row["close_date"]).to_pydatetime()).total_seconds() > 86400
+                    and row["exit_reason"] != "fw_session_gap"), (row["close_date"], row["exit_reason"])
+    outside = [not cal.status(pd.Timestamp(d).to_pydatetime()).is_open for d in sol["open_date"]]
+    assert any(outside), "没声明的交易对（SOL）在美股休市时照常入场"
+    assert (btc["exit_reason"] == "fw_session_gap").any() or len(btc) < 3

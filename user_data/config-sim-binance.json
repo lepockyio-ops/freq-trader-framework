@@ -1,0 +1,102 @@
+{
+    "strategy": "MyStrategy",
+    "fw_sim_only": true,
+    "$schema": "https://schema.freqtrade.io/schema.json",
+    "max_open_trades": 3,
+    "stake_currency": "USDT",
+    "stake_amount": "unlimited",
+    "tradable_balance_ratio": 0.99,
+    "dry_run": true,
+    "dry_run_wallet": 10000,
+    "initial_state": "running",
+    "trading_mode": "futures",
+    "margin_mode": "isolated",
+    "fw_trade_direction": "both",
+    "fw_pair_directions": {},
+    "fw_asset_classes": {
+        "us_equity": {
+            "pairs": [
+                "TSLA/USDT:USDT",
+                "NVDA/USDT:USDT",
+                "AAPL/USDT:USDT",
+                "SPY/USDT:USDT",
+                "QQQ/USDT:USDT"
+            ],
+            "calendar": "nyse",
+            "calendar_params": {
+                "session": "regular",
+                "extra_closed_dates": [],
+                "extra_early_closes": []
+            },
+            "entry_after_open_min": 15,
+            "entry_before_close_min": 15,
+            "flat_before_close_min": 0,
+            "flat_before_gap": false,
+            "flat_before_gap_min": 30,
+            "events_file": "",
+            "events_required": false,
+            "events_max_age_days": 3,
+            "event_before_min": 1440,
+            "event_after_min": 60,
+            "flat_before_event": true,
+            "params": {}
+        }
+    },
+    "liquidation_buffer": 0.05,
+    "cancel_open_orders_on_exit": false,
+    "unfilledtimeout": {
+        "entry": 3,
+        "exit": 10,
+        "exit_timeout_count": 0,
+        "unit": "minutes"
+    },
+    "entry_pricing": {
+        "price_side": "other",
+        "use_order_book": true,
+        "order_book_top": 1,
+        "price_last_balance": 0.0
+    },
+    "exit_pricing": {
+        "price_side": "other",
+        "use_order_book": true,
+        "order_book_top": 1
+    },
+    "order_types": {
+        "entry": "limit",
+        "exit": "market",
+        "emergency_exit": "market",
+        "force_exit": "market",
+        "force_entry": "market",
+        "stoploss": "market",
+        "stoploss_on_exchange": true,
+        "stoploss_on_exchange_interval": 60,
+        "stoploss_price_type": "mark"
+    },
+    "exchange": {
+        "name": "binance",
+        "key": "",
+        "secret": "",
+        "pair_whitelist": [
+            "BTC/USDT:USDT",
+            "ETH/USDT:USDT",
+            "SOL/USDT:USDT",
+            "BNB/USDT:USDT",
+            "HYPE/USDT:USDT",
+            "TSLA/USDT:USDT",
+            "NVDA/USDT:USDT",
+            "AAPL/USDT:USDT",
+            "SPY/USDT:USDT",
+            "QQQ/USDT:USDT"
+        ],
+        "pair_blacklist": []
+    },
+    "pairlists": [
+        {
+            "method": "StaticPairList"
+        }
+    ],
+    "bot_name": "s03-sim-binance",
+    "internals": {
+        "process_throttle_secs": 5
+    }
+}

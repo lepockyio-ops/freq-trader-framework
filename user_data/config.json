@@ -11,6 +11,29 @@
     "margin_mode": "isolated",
     "fw_trade_direction": "both",
     "fw_pair_directions": {},
+    "fw_asset_classes": {
+        "us_equity": {
+            "pairs": [],
+            "calendar": "nyse",
+            "calendar_params": {
+                "session": "regular",
+                "extra_closed_dates": [],
+                "extra_early_closes": []
+            },
+            "entry_after_open_min": 15,
+            "entry_before_close_min": 15,
+            "flat_before_close_min": 0,
+            "flat_before_gap": false,
+            "flat_before_gap_min": 30,
+            "events_file": "",
+            "events_required": true,
+            "events_max_age_days": 3,
+            "event_before_min": 1440,
+            "event_after_min": 60,
+            "flat_before_event": true,
+            "params": {}
+        }
+    },
     "liquidation_buffer": 0.05,
     "cancel_open_orders_on_exit": false,
     "unfilledtimeout": {

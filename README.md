@@ -1,8 +1,10 @@
-# freq-trader：freqtrade 自动交易框架（Binance USDⓈ-M 永续 · 模板版 v2.13 · 策略留空）
+# freq-trader：freqtrade 自动交易框架（Binance USDⓈ-M 永续 · 模板版 v2.15 · 策略留空）
 
 这是一个基于 [freqtrade](https://www.freqtrade.io/) 2026.10、**不含交易策略的框架**，交易规则由你写成一个继承 `FrameworkStrategy` 的策略接入。框架已经提供：
 
 - 风控：止损护栏、按风险定仓、逐仓杠杆与强平距离、事件窗口、总风险与相关性、交易所端止损、Protections；
+- 资产类别接口（v2.14）：交易所的美股永续（例如 Binance 的 TSLA/USDT:USDT）按美股交易时段、休市与个股事件管理，默认不启用；
+- 模拟盘与回测的交易所端口（v2.15）：Binance、OKX、Hyperliquid 三套现成配置，加密货币与美股永续都能跑，只用公开行情、不需要密钥；
 - 监控告警、官方事件日历、复盘指标；
 - 研究前端：找想法、筛因子、统计检验；
 - 由 OpenClaw agent 运营，以及一键部署脚本。
@@ -85,7 +87,7 @@ freqtrade backtesting -c $S03_FT_CONFIG --strategy SmaCrossExample --strategy-pa
 
 | 文件 | 改什么 | 谁来改 | 默认 |
 |---|---|---|---|
-| `user_data/config.json`（部署后是 `/etc/s03/ft-config.json`） | `"strategy"`（你的策略类名）、`pair_whitelist`（交易对）、`fw_trade_direction` 与 `fw_pair_directions`（交易方向）、`max_open_trades`、`stake_currency` | 你 | `MyStrategy`；BTC、ETH、SOL、BNB、HYPE；多空都做（`both`）；最多 3 笔；`dry_run: true` |
+| `user_data/config.json`（部署后是 `/etc/s03/ft-config.json`） | `"strategy"`（你的策略类名）、`pair_whitelist`（交易对）、`fw_trade_direction` 与 `fw_pair_directions`（交易方向）、`fw_asset_classes`（美股永续等资产类别）、`max_open_trades`、`stake_currency` | 你 | `MyStrategy`；BTC、ETH、SOL、BNB、HYPE；多空都做（`both`）；最多 3 笔；`dry_run: true` |
 | `user_data/strategies/MyStrategy.py` | 你的策略 | 你 | 空白模板 |
 | `user_data/strategies/framework_base.py` 的 `FW_DEFAULTS` | 框架风险参数（单笔风险、总风险、杠杆上限、维持保证金估计）；也可以在策略的 `framework_params()` 里覆盖 | 你（谨慎） | 均为示例值 |
 | `/etc/s03/ft-trader.env` | Binance API Key、freqtrade API 账号（`install.sh` 生成模板） | 只能是你 | 空 |
@@ -107,6 +109,49 @@ freqtrade backtesting -c $S03_FT_CONFIG --strategy SmaCrossExample --strategy-pa
 - `"fw_pair_directions": {"HYPE/USDT:USDT": "long"}`：按交易对覆盖（没写的交易对用 `fw_trade_direction`）。
 - 不允许的方向：策略的信号在生成时就被清掉，下单前框架再查一次；取值无效时机器人启动报错，入场检查一律拒绝。回测也按这个设置执行。
 - 策略里用 `enter_long` / `enter_short` 写信号，止损写在 `fw_stop`：多单在入场价下方，空单在上方。
+
+**美股永续（资产类别，v2.14，默认不启用，用户设定）**：交易所提供的股票永续合约走的是同一个交易所接口，
+例如 Binance USDⓈ-M 的 TradFi 永续（`TSLA/USDT:USDT`、`NVDA/USDT:USDT`、`AAPL/USDT:USDT`…，USDT 结算）。
+合约本身 24/7 可交易，但标的只在美股交易时段有价格：休市时指数停在最后一个值，开盘、财报后会跳空。所以框架按“资产类别”管理：
+1. 把交易对同时写进 `exchange.pair_whitelist` 和 `fw_asset_classes.us_equity.pairs`（`monitor.toml` 的 `pairs` 也要同步）。
+2. 按需要调 `us_equity` 的设置（默认值都是示例值）：
+   - `calendar`：`nyse`（常规时段 09:30–16:00 美东，提前收盘日 13:00；已与 NYSE 公布的 2026–2028 休市表核对）；`calendar_params.session` 设 `extended` 时用 04:00–20:00 美东；临时休市写进 `extra_closed_dates`；
+   - `entry_after_open_min` / `entry_before_close_min`：开盘后、收盘前各 15 分钟不新开仓；休市时一律不新开仓；
+   - `flat_before_close_min`：>0 时每天收盘前平仓（不隔夜）；`flat_before_gap`：周末和节假日前平仓（`flat_before_gap_min` 分钟前）；
+   - `events_file`：个股事件（财报、拆股等）JSON，格式见 `user_data/strategies/fw_assets.py`；事件前 `event_before_min`、后 `event_after_min` 不新开仓，`flat_before_event` 时事件前平仓。
+     `events_required: true`（默认）时，实盘 / dry-run 里文件缺失、损坏或超过 `events_max_age_days` 未更新就拒绝这一类的新开仓；回测不因文件问题拒绝；
+   - `params`：只能更严格的风险参数，例如 `{"risk_per_trade": 0.0025, "max_position_leverage": 5, "stop_min_pct": 1.2}`。可覆盖：`risk_per_trade`、`max_position_leverage`、`stop_max_pct`、`max_hold_days`（只能调小），`stop_min_pct`、`liq_to_stop_multiple`、`round_trip_cost`、`funding_est`（只能调大）。放宽会让机器人启动报错。
+3. 下载数据：`freqtrade download-data -c <配置> -p TSLA/USDT:USDT --timeframes 1d 15m --trading-mode futures`（Binance 2026 年 1 月起才有这些合约，历史很短）。
+4. 运行 `s03ft doctor`：检查类别配置、类别交易对在白名单里、要求的事件文件可用。
+- 交易所把合约标为 TradFi、却没有写进任何类别的交易对，框架一律拒绝入场。没有写进类别的交易对仍按加密货币（24x7）处理。
+- 前提由你自己确认：Binance 账户的 KYC、TradFi 永续的协议与所在地区限制（美国等地区不可用）。框架不连接账户、不替你签任何协议。
+- 不支持：链上代币化股票（例如 Binance Wallet 里的 Ondo 代币化美股）。它要钱包签名、不在 freqtrade 支持的交易所接口里。
+  Binance 的 `binance-tokenized-securities-info` 是只读的 Wallet Skill（查代币化股票的行情、公司行动、市场状态），可以作为 agent 找资料的参考，不能下单；需要交易的 `binance-agentic-wallet` 要签名，本框架不接入。
+- 风险与未核验项见 `docs/REFERENCE.md` 的“美股永续”。
+
+**模拟盘与回测：Binance / OKX / Hyperliquid（v2.15）**：三套现成配置，只用交易所的公开行情接口，**不需要也不要填任何 API 密钥**。
+配置都标了 `"fw_sim_only": true`：框架在实盘模式下拒绝启动（`dry_run` 改成 false 也一样），实盘请用你自己审核过的 `config.json`。
+
+| 交易所 | 配置 | 结算 | 加密货币 | 美股永续（`us_equity`） | 本环境验证（2026-11-21） |
+|---|---|---|---|---|---|
+| Binance USDⓈ-M | `user_data/config-sim-binance.json` | USDT | BTC、ETH、SOL、BNB、HYPE `/USDT:USDT` | TSLA、NVDA、AAPL、SPY、QQQ `/USDT:USDT`（TradFi 永续） | 配置通过 freqtrade 校验，交易对在 freqtrade 自带档位表里；**未实测**（Binance API 对本环境返回 451） |
+| OKX 永续 | `user_data/config-sim-okx.json` | USDT | 同上 | TSLA、NVDA、AAPL、SPY、QQQ `/USDT:USDT`（OKX 股票永续） | 下载数据、回测（43 笔，其中股票 9 笔全部在 NYSE 时段内）、模拟盘启动 |
+| Hyperliquid | `user_data/config-sim-hyperliquid.json` | USDC | BTC、ETH、SOL、BNB、HYPE `/USDC:USDC` | `XYZ-TSLA`、`XYZ-NVDA`、`XYZ-AAPL`、`XYZ-SP500`、`XYZ-XYZ100` `/USDC:USDC`（HIP-3 的 xyz 市场） | 取数据、回测（23 笔，其中股票 10 笔全部在 NYSE 时段内）、模拟盘启动 |
+
+```bash
+s03ft sim list                                                      # 三套配置的交易对与检查（模拟盘、无密钥、资产类别）
+s03ft sim data --exchange okx --timerange 20260901-                 # 下载回测数据（K 线、标记价、资金费）
+s03ft sim backtest --exchange okx --strategy MyStrategy --timerange 20261001-20261120
+s03ft sim dryrun --exchange hyperliquid --strategy MyStrategy       # 前台运行模拟盘（Ctrl+C 停止）
+```
+
+- 加减交易对：改对应配置的 `exchange.pair_whitelist`；股票、商品等 TradFi 合约还要写进 `fw_asset_classes.us_equity.pairs`，否则框架拒绝入场。
+- 模拟配置里 `us_equity.events_required` 是 `false`（没有个股事件文件也能模拟）；宏观事件日历仍按 `S03_EVENTS_REQUIRED`：回测命令默认设为 0，模拟盘需要事件文件（`s03ft events build`）或自行设为 0。
+- **Hyperliquid**：每个周期只能取到最近 5000 根 K 线（15m 约 52 天），freqtrade 的 `download-data` 因此拒绝下载；`s03ft sim data` 改用 freqtrade 的逐对下载取这一段并与本地数据合并，**定期运行（例如每周）历史才会变长**。
+  资金费每小时结算；交易所端止损只支持限价止损（配置已改为 `"stoploss": "limit"`，没有触发价类型设置）。HIP-3 市场只能逐仓，需要 `exchange.hip3_dexes`。
+  HIP-3 市场由第三方部署：预言机价格、杠杆上限由部署方设定，部署方可以暂停交易并按标记价结算全部仓位（Hyperliquid 文档）。
+- **OKX**：股票永续资金费 8 小时一次（本地数据：81 天 245 条）；`instCategory` 3 = 股票、4 = 商品，框架据此识别。账户能否交易股票永续取决于地区和 KYC，模拟盘不涉及。
+- 所有数值（开收盘缓冲、单笔风险等）都是示例值；模拟盘结果不代表实盘成交。
 筛因子默认用跨币种比较，至少要 5 个币；少于 5 个时自动改用单币择时口径（时间序列 IC）。
 
 ## 5. 接入你的策略（3 步）
@@ -174,6 +219,16 @@ VT_PYTHON=/opt/s03/vt-venv/bin/python s03ft lab factors --zoo all   # 内置 55 
 完整的验证记录（哪些配置因实测而修改）见 `docs/RESEARCH_LAB.md` 的“安装验证记录”。
 
 Vibe-Trading 只用于找想法和粗筛。它的回测按“下一根开盘调仓”成交、不模拟止损单；它的加密行情是 OKX 现货、按 UTC+8 切日。所以上线证据一律以 freqtrade 回测为准。
+
+### 推荐的新闻 API
+
+| 来源 | 接入方式 | 费用 / 密钥 | 本框架里的用途 |
+|---|---|---|---|
+| [方程式新闻 EQN](https://eqn.news/api-docs) | REST `https://api.eqn.news/public/v1/news`（`coin`、`channel`、`before` 翻页）、WebSocket、RSS、MCP | 免费、不需要密钥；按 IP 限速（全部公开接口合计每 10 秒 30 次） | **推荐**，尚未接入守卫：中英文快讯与交易所公告，带币种标签；有 `tradfi`、`binance`、`hl`（Hyperliquid）等频道，适合美股永续与 Hyperliquid。正文为自动抓取和机器翻译，可能不准确 |
+| [BlockBeats](https://www.theblockbeats.info/) | REST（见 `docs/RESEARCH_LAB.md`） | 付费会员、需要 API Key（只放在 `/etc/s03/blockbeats.env`） | 已接入：新闻事件守卫的必需来源之一，另有 ETF 资金流、稳定币、持仓量等研究数据 |
+| [Odaily](https://www.odaily.news/) | 公开快讯接口 | 免费 | 已接入：新闻事件守卫的必需来源之一，历史可回填到 2018 年 |
+
+EQN 要作为第三个守卫来源，需要先用 `news backfill` / `news replay` 同样的方法回放误报率，再决定是否接入（不会自动启用）。
 
 ### 新闻事件守卫：Odaily + BlockBeats（v2.5）
 

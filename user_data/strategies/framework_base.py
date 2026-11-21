@@ -20,7 +20,9 @@
   - 杠杆：强平距离 ≥ liq_to_stop_multiple × 止损距离，且 ≤ max_position_leverage 与交易所上限；
   - 入场前检查：事件窗口、事件日历有效性（来源状态、时间格式、新鲜度、覆盖区间）、新闻守卫、
     总在险风险 ≤ max_open_risk、与已持仓相关性 ≤ corr_threshold。检查本身出错一律拒绝入场；
-  - 交易所端止损（按绝对价格）、最长持有天数、Protections（连亏暂停、日/周故障保护、冷却）。
+  - 交易所端止损（按绝对价格）、最长持有天数、Protections（连亏暂停、日/周故障保护、冷却）；
+  - 资产类别（v2.14，fw_assets.py）：配置 fw_asset_classes 把交易对归到某个类别（例如 us_equity），按交易日历限制开仓时段、
+    收盘 / 长假 / 个股事件前平仓，并用只能更严格的参数覆盖风险设置；交易所标为 TradFi 却没声明的合约拒绝入场。
 已知限制见 docs/REFERENCE.md 的“已知问题”。
 所有数值是示例值，不代表适合任何策略；在子类里用 framework_params 覆盖。需要 freqtrade 2026.10。
 """
@@ -38,6 +40,9 @@ from pandas import DataFrame
 
 from freqtrade.persistence import Trade
 from freqtrade.strategy import IStrategy, stoploss_from_absolute
+
+import fw_assets as A                                  # v2.14：资产类别（美股永续等非 24/7 标的）
+from fw_sessions import make_calendar
 
 logger = logging.getLogger(__name__)
 
@@ -215,6 +220,75 @@ class FrameworkStrategy(IStrategy):
     def fw(self) -> dict:
         return {**FW_DEFAULTS, **(self.framework_params or {}), **self._research_overrides()}
 
+    # ---------------------------------------------------------- 资产类别（v2.14）
+    def _classes(self) -> dict:
+        cfg = getattr(self, "config", None) or {}
+        key = json.dumps(cfg.get("fw_asset_classes") or {}, sort_keys=True, default=str)
+        cache = getattr(self, "_classes_cache", None)
+        if cache and cache[0] == key:
+            return cache[1]
+        classes = A.parse_classes(cfg)
+        cals = {n: make_calendar(c["calendar"], **(c["calendar_params"] or {})) for n, c in classes.items()}
+        by_pair = {p: n for n, c in classes.items() for p in c["pairs"]}
+        self._classes_cache = (key, (classes, cals, by_pair))
+        return self._classes_cache[1]
+
+    def asset_class(self, pair: str | None) -> str | None:
+        """交易对所属的资产类别名；没有声明的返回 None（按加密货币 24x7 处理）。"""
+        return self._classes()[2].get(pair) if pair else None
+
+    def fw_for(self, pair: str | None) -> dict:
+        """这个交易对生效的框架参数：框架参数 + 所属类别的 params（只能更严格，放宽会报错 → 调用方拒绝入场）。"""
+        name = self.asset_class(pair)
+        if not name:
+            return self.fw
+        return A.merge_params(self.fw, self._classes()[0][name]["params"], name)
+
+    def _market(self, pair: str) -> dict | None:
+        dp = getattr(self, "dp", None)
+        fn = getattr(dp, "market", None)
+        try:
+            return fn(pair) if fn else None
+        except Exception:                                  # noqa: BLE001
+            return None
+
+    def _asset_block(self, pair: str, now: datetime) -> str | None:
+        """资产类别的入场检查：未声明的 TradFi 合约、交易时段、个股事件。返回拒绝原因或 None。"""
+        cfg = getattr(self, "config", None) or {}
+        name = self.asset_class(pair)
+        if not name:
+            if A.is_tradfi_market(self._market(pair), cfg.get("fw_tradfi_markers")):
+                return "交易所标为 TradFi（股票 / 商品）合约，但没有在 fw_asset_classes 里声明"
+            return None
+        classes, cals, _ = self._classes()
+        cls, now = classes[name], (now if now.tzinfo else now.replace(tzinfo=timezone.utc))
+        why = A.entry_block(cls, cals[name], now)
+        if why:
+            return f"{name}：{why}"
+        problem, events = A.events_status(cls, now)
+        if problem and cls["events_required"] and self._runmode() not in RESEARCH_RUNMODES:
+            return f"{name}：{problem}"
+        hit = A.event_hit(cls, events, A.symbol_aliases(pair), now)
+        if hit:
+            return f"{name}：个股事件 {hit[0]} {hit[1].isoformat()}"
+        return None
+
+    def _asset_exit(self, pair: str, now: datetime) -> str | None:
+        name = self.asset_class(pair)
+        if not name:
+            return None
+        classes, cals, _ = self._classes()
+        cls, now = classes[name], (now if now.tzinfo else now.replace(tzinfo=timezone.utc))
+        why = A.session_exit(cls, cals[name], now)
+        if why:
+            return why
+        if cls["flat_before_event"]:
+            _, events = A.events_status(cls, now)
+            hit = A.event_hit(cls, events, A.symbol_aliases(pair), now, before_only=True)
+            if hit:
+                return f"fw_equity_event:{hit[0]}"
+        return None
+
     def _runmode(self) -> str:
         return getattr(getattr(getattr(self, "dp", None), "runmode", None), "value", "") or ""
 
@@ -246,10 +320,21 @@ class FrameworkStrategy(IStrategy):
     def bot_start(self, **kwargs) -> None:
         """启动时校验方向设置：取值无效直接报错（不让机器人带着无效设置运行）。子类覆盖时调用 super().bot_start()。"""
         cfg = getattr(self, "config", None) or {}
+        if cfg.get("fw_sim_only") and (self._runmode() == "live" or cfg.get("dry_run") is False):
+            raise ValueError("这个配置标了 fw_sim_only（只用于模拟盘与回测，v2.15）：不能用于实盘；实盘请用你自己审核过的配置")
         self.trade_direction()
         for p in (cfg.get("fw_pair_directions") or {}):
             self.trade_direction(p)
         logger.info("交易方向：默认 %s；按交易对覆盖：%s", self.trade_direction(), cfg.get("fw_pair_directions") or "无")
+        classes = self._classes()[0]                                  # 资产类别（v2.14）：结构、日历、参数只能更严格
+        for name, c in classes.items():
+            A.merge_params(self.fw, c["params"], name)
+            if c["pairs"]:
+                logger.info("资产类别 %s（日历 %s）：%s", name, c["calendar"], ",".join(c["pairs"]))
+        wl = ((cfg.get("exchange") or {}).get("pair_whitelist")) or []
+        undeclared = [p for p in wl if not self.asset_class(p) and A.is_tradfi_market(self._market(p), cfg.get("fw_tradfi_markers"))]
+        if undeclared:
+            logger.error("白名单里有交易所标为 TradFi 的合约，但没有声明资产类别（会一直拒绝入场）：%s", ",".join(undeclared))
 
     @property
     def protections(self):
@@ -306,12 +391,12 @@ class FrameworkStrategy(IStrategy):
                                   for sv, cv, tv, uv in zip(stop, cap, df["date"][m], user)]
         return df
 
-    def _plan_stop(self, entry_tag, rate: float, is_short: bool = False) -> float | None:
-        """按下单价检查计划止损：返回合规的止损价，或 None（不入场）。"""
+    def _plan_stop(self, entry_tag, rate: float, is_short: bool = False, pair: str | None = None) -> float | None:
+        """按下单价检查计划止损：返回合规的止损价，或 None（不入场）。pair 决定用哪个资产类别的参数（v2.14）。"""
         plan = decode_plan(entry_tag)
         if plan is None or not rate or rate <= 0:
             return None
-        return guarded_stop(float(rate), plan["stop"], self.fw, is_short)
+        return guarded_stop(float(rate), plan["stop"], self.fw_for(pair), is_short)
 
     def _mm(self, pair: str) -> float:
         m = self.fw["maint_margin_est"]
@@ -395,10 +480,10 @@ class FrameworkStrategy(IStrategy):
                  **kwargs) -> float:
         try:
             short = side == "short"
-            stop = self._plan_stop(entry_tag, current_rate, short)
+            stop = self._plan_stop(entry_tag, current_rate, short, pair)
             if stop is None:
                 return 1.0
-            return float(isolated_leverage(stop_distance(current_rate, stop, short), max_leverage, self._mm(pair), self.fw))
+            return float(isolated_leverage(stop_distance(current_rate, stop, short), max_leverage, self._mm(pair), self.fw_for(pair)))
         except Exception:
             logger.exception("杠杆计算出错，按 1 倍处理：%s", pair)
             return 1.0
@@ -409,10 +494,10 @@ class FrameworkStrategy(IStrategy):
         出错返回 0（不入场）：freqtrade 对这个回调出错时的默认值是 proposed_stake，不能依赖它。"""
         try:
             short = side == "short"
-            stop = self._plan_stop(entry_tag, current_rate, short)
+            stop = self._plan_stop(entry_tag, current_rate, short, pair)
             if stop is None:
                 return 0                                                   # 没有计划或止损不合规：不入场
-            stake = stake_for(self.wallets.get_total_stake_amount(), stop_distance(current_rate, stop, short), leverage, self.fw)
+            stake = stake_for(self.wallets.get_total_stake_amount(), stop_distance(current_rate, stop, short), leverage, self.fw_for(pair))
             if min_stake and stake < min_stake:
                 return 0
             return min(stake, max_stake)
@@ -478,11 +563,15 @@ class FrameworkStrategy(IStrategy):
             return False
         if self._in_event_window(current_time, times):
             return False
+        ab = self._asset_block(pair, current_time)
+        if ab:
+            logger.info("资产类别检查：拒绝入场：%s（%s）", pair, ab)
+            return False
         nb = self._news_block(pair, current_time)
         if nb:
             logger.info("新闻事件守卫：%s 暂停新开仓（%s）", pair, nb)
             return False
-        stop = self._plan_stop(entry_tag, rate, short)
+        stop = self._plan_stop(entry_tag, rate, short, pair)
         if stop is None or not rate or stop_distance(rate, stop, short) <= 0:
             return False
         equity = self.wallets.get_total_stake_amount()
@@ -547,7 +636,8 @@ class FrameworkStrategy(IStrategy):
         """下单时实际生效的止损（v2.8）：计划止损按下单价过护栏（floor 模式会被抬到下限）——与定仓用的是同一个值。
         v2.7 挂单风险用的是计划里的原始止损，floor 模式下比定仓用的止损近，在险风险少算（外部审查 v2.7 P1-1）。"""
         px = getattr(t, "open_rate_requested", None) or getattr(t, "open_rate", None)
-        return self._plan_stop(getattr(t, "enter_tag", None), float(px), bool(getattr(t, "is_short", False))) if px else None
+        return self._plan_stop(getattr(t, "enter_tag", None), float(px), bool(getattr(t, "is_short", False)),
+                               getattr(t, "pair", None)) if px else None
 
     def _open_risk(self, open_trades) -> float | None:
         """已占用的止损风险（v2.7 修正）：
@@ -675,7 +765,7 @@ class FrameworkStrategy(IStrategy):
             return float(sp)
         if trade.get_custom_data("fw_invalid") or not getattr(trade, "nr_of_successful_entries", 1) or not trade.amount:
             return None                                     # 还没有已完成的入场成交：交易所上也还没有仓位
-        fw, fill = self.fw, float(trade.open_rate)
+        fw, fill = self.fw_for(trade.pair), float(trade.open_rate)
         short = bool(getattr(trade, "is_short", False))
         sgn = 1 if short else -1                             # 止损相对成交价的方向：多单在下方（−），空单在上方（+）
         plan, reason, stop = decode_plan(trade.enter_tag), "", None
@@ -725,7 +815,7 @@ class FrameworkStrategy(IStrategy):
         if not path or self._runmode() not in RESEARCH_RUNMODES:
             return
         try:
-            fw, amt, fill = self.fw, float(trade.amount or 0), float(trade.open_rate)
+            fw, amt, fill = self.fw_for(trade.pair), float(trade.amount or 0), float(trade.open_rate)
             px = float(getattr(trade, "open_rate_requested", None) or fill)
             order_stop = self._order_stop(trade)
             short = bool(getattr(trade, "is_short", False))
@@ -833,7 +923,18 @@ class FrameworkStrategy(IStrategy):
                 logger.error("%s 价格 %s 已穿过框架止损 %s，引擎止损仍为 %s：立即市价离场（离场失败时每轮重试）",
                              pair, current_rate, sp, getattr(trade, "stop_loss", None))
             return "fw_stop_crossed"
-        if current_time - trade.open_date_utc >= timedelta(days=self.fw["max_hold_days"]):
+        try:
+            ax = self._asset_exit(pair, current_time)
+        except Exception:                                  # noqa: BLE001  时段检查出错：保守离场（类别配置在启动时已校验）
+            logger.exception("资产类别离场检查出错，平仓：%s", pair)
+            ax = "fw_session_error"
+        if ax:
+            return ax
+        try:
+            max_hold = self.fw_for(pair)["max_hold_days"]
+        except ValueError:
+            max_hold = self.fw["max_hold_days"]
+        if current_time - trade.open_date_utc >= timedelta(days=max_hold):
             return "max_hold"
         df, _ = self.dp.get_analyzed_dataframe(pair, self.timeframe)
         last = None if df is None or df.empty else df.iloc[-1]

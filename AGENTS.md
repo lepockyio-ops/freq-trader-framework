@@ -13,7 +13,7 @@
 
 - **不索取、不输出、不写入任何密钥**：私钥、API 钱包、交易所 Key、token。需要时请用户自己写进服务器上的环境文件。
 - **不下真实订单，不签名，不广播交易**。不运行 `freqtrade trade`，也不直接调用 freqtrade REST API 的 forceenter / forceexit。
-- 不修改 `dry_run`、`pair_whitelist`、`fw_trade_direction`、`fw_pair_directions`、`max_open_trades`、`FW_DEFAULTS` 等交易配置；不恢复已暂停的交易；不批准 FreqAI 模型。
+- 不修改 `dry_run`、`pair_whitelist`、`fw_trade_direction`、`fw_pair_directions`、`fw_asset_classes`（资产类别与美股永续交易对）、`fw_sim_only`、`max_open_trades`、`FW_DEFAULTS` 等交易配置；不恢复已暂停的交易；不批准 FreqAI 模型。
 - 不把想法改为 `approved`（`--by human` 只属于用户）。
 - 不为了让回测或检验“通过”而改阈值、删数据、挑区间、事后改样本外起点或删掉策略声明的压力方案；每换一次参数都是一次新的尝试，必须登记（`lab idea move --to backtesting`）。
 - 不改 `fwresearch/mcp_guard.py` 和 `deploy/openclaw/*.allow` 的白名单来放行交易、连接器或写文件类工具。
@@ -31,6 +31,7 @@
 | 自检 | `s03ft doctor --research`（研究副本）/ `s03ft doctor`（服务器） |
 | 下载公开行情 | `freqtrade download-data -c $S03_FT_CONFIG --timeframes 1d 15m --timerange 20230101- --trading-mode futures` |
 | 筛因子（5 个币，跨币种比较） | `s03ft lab factors --tf 1d` |
+| 模拟端口（Binance / OKX / Hyperliquid，只用公开行情） | `s03ft sim list` / `sim data --exchange <名>` / `sim backtest --exchange <名> --strategy <类名>`（模拟盘 `sim dryrun` 只能由用户启动；不要往配置里填任何密钥，不要去掉 `fw_sim_only`） |
 | 偏差检查 | `s03ft research g0 --timerange 20250101-` |
 | 登记样本外起点（回测之前，只能一次） | `s03ft lab idea holdout --id <id> --start <日期>` |
 | 组合回测（主证据） | `s03ft research portfolio --all --idea <id> --trials base,stop_floor --timerange 20220101-`（每次运行自动记入想法登记簿；候选方案供 PBO） |

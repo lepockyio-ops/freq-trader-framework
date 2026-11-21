@@ -1,4 +1,4 @@
-# 交易框架模板手册（freqtrade · 策略留空 v2.13）
+# 交易框架模板手册（freqtrade · 策略留空 v2.15）
 
 本手册描述**当前代码**的行为。旧版 S-03 策略（S03Strategy、日线 9 日 EMA、3R/5R 分批、4 个标的等）只存在于 git 历史 v1.x，与本模板无关。
 命令细节以 `README.md` 为准；框架接口见 `docs/FRAMEWORK.md`；研究与统计口径见 `docs/RESEARCH_LAB.md`；已知问题见 `docs/REFERENCE.md`。
@@ -107,6 +107,8 @@ freqtrade 回测按 K 线内成交假设，不模拟排队、冲击与完整的�
 | v2.0 | 改为策略留空的框架模板 |
 | v2.2 | 研究前端：想法登记、因子库、统计检验；加入 HYPE 与跨币种比较 |
 | v2.3–v2.5 | 新闻事件守卫（BlockBeats + Odaily，规则只看正文） |
+| v2.15 | 模拟盘与回测的交易所端口：Binance / OKX / Hyperliquid 三套配置（加密货币 + 美股永续，标 `fw_sim_only`，实盘模式拒绝启动，不需要密钥）；`s03ft sim list / data / backtest / dryrun`；Hyperliquid 用逐对下载累积最近 5000 根 K 线；TradFi 识别补上 OKX `instCategory` 与 Hyperliquid HIP-3；README 标注推荐的新闻 API（EQN、BlockBeats、Odaily） |
+| v2.14 | 资产类别接口：配置 `fw_asset_classes` 把交易所的美股永续（例如 Binance TSLA/USDT:USDT）归到 `us_equity`，按 NYSE 交易日历（休市、提前收盘、夏令时）限制开仓，可选收盘 / 长假 / 个股事件前平仓，风险参数只能更严格；没声明的 TradFi 合约拒绝入场；新日历用 `register_calendar` 接入；`s03ft doctor` 检查类别配置。默认不启用 |
 | v2.13 | freqtrade 升级到 2026.10（需要 Python ≥ 3.12）；支持多单与空单（止损、定仓、杠杆、止损穿越、分批止盈、相关性、风险记录、R、监控都按方向处理）；交易方向在配置里设置（`fw_trade_direction` 全局、`fw_pair_directions` 按交易对），默认多空都做；`s03ft doctor` 检查方向设置和监控交易对与白名单一致 |
 | v2.12 | 按第七轮审查修正：候选方案的风险完整性独立判定，手填离散度不能替代缺失的证据；复核比较最终 R（新增 `portfolio-verify`）；复盘 R 只用记录、估算单列并报告读不到的原因；登记顺序用登记簿行号；指纹路径跨平台一致 |
 | v2.11 | 按第六轮审查修正：R 未知的交易逐层清点、最多判“证据不足”（不再静默排除）；研究端 R 的分母改用回测时记录的初始风险，复盘端读 freqtrade 数据库；事后推算用策略实际的止损上下限；PBO 周网格首尾覆盖并核对守恒；版本指纹补上风险模块 |

@@ -217,6 +217,7 @@ def trade_cfg_checks(add, cf: Path, monitor_toml: Path) -> None:
     extra = [k for k in per if k not in wl]
     add(f"{cf.name} 按交易对的方向只写了白名单里的交易对", not extra, f"不在白名单：{extra}" if extra else "")
     add(f"{cf.name} 的交易对白名单不为空", bool(wl), ", ".join(wl))
+    asset_class_checks(add, cf, cfg, wl)
     try:
         import tomllib
 
@@ -225,6 +226,36 @@ def trade_cfg_checks(add, cf: Path, monitor_toml: Path) -> None:
         return
     add(f"监控的交易对与 {cf.name} 白名单一致（{monitor_toml.name}）", sorted(mp) == sorted(wl),
         "" if sorted(mp) == sorted(wl) else f"只在白名单：{sorted(set(wl) - set(mp))}；只在监控：{sorted(set(mp) - set(wl))}")
+
+
+def asset_class_checks(add, cf: Path, cfg: dict, wl: list) -> None:
+    """资产类别（v2.14）：结构与日历有效、参数只能更严格、类别里的交易对在白名单里、要求个股事件文件时文件存在且有效。"""
+    sys.path.insert(0, str(HOME / "user_data" / "strategies"))
+    try:
+        import fw_assets as A
+        from framework_base import FW_DEFAULTS
+    except ImportError as e:
+        add(f"{cf.name} 的资产类别可以校验", False, f"无法导入 fw_assets / framework_base：{e}")
+        return
+    try:
+        classes = A.parse_classes(cfg)
+        for name, c in classes.items():
+            A.merge_params(FW_DEFAULTS, c["params"], name)      # 与默认框架参数比；策略自己的 framework_params 在启动时再比一次
+        err = ""
+    except ValueError as e:
+        classes, err = {}, str(e)
+    add(f"{cf.name} 的资产类别配置有效（日历、取值、参数只能更严格）", not err,
+        err or "；".join(f"{n}: {c['calendar']} {len(c['pairs'])} 个交易对" for n, c in classes.items()) or "未配置")
+    for name, c in classes.items():
+        if not c["pairs"]:
+            continue
+        miss = [p for p in c["pairs"] if p not in wl]
+        add(f"{cf.name} 资产类别 {name} 的交易对都在白名单里", not miss, f"不在白名单：{miss}" if miss else ", ".join(c["pairs"]))
+        if c["events_required"]:
+            f = c["events_file"]
+            info = A.load_equity_events(f) if f else {"error": "未配置 events_file"}
+            add(f"{cf.name} 资产类别 {name} 的个股事件文件可用（events_required）", not info["error"],
+                info["error"] or f"{f}：{len(info['events'])} 个事件")
 
 
 def cmd_doctor(a) -> int:
@@ -253,6 +284,12 @@ def cmd_doctor(a) -> int:
         add(f"{cf.name} 没有写 timeframe（周期以策略为准）", tf is None,
             f"配置写了 timeframe = {tf}，会覆盖策略里的周期：删掉这一行" if tf else "")
         trade_cfg_checks(add, cf, Path("/etc/s03/monitor.toml") if not a.research else HOME / "monitor" / "monitor.example.toml")
+    if a.research:                                              # 模拟盘与回测的交易所配置（v2.15）
+        sys.path.insert(0, str(HOME))
+        from s03ft import sim
+
+        for e in sim.EXCHANGES:
+            sim.sim_checks(add, sim.config_path(HOME, e), HOME)
     for f in ("monitor/events_calendar.py", "monitor/run_monitor.py", "research/matrix.py"):
         add(f"{f} 存在", (HOME / f).exists())
     if not a.research:
@@ -379,6 +416,20 @@ def cmd_metrics(a) -> int:
     return emit(m, a.json, md.read_text("utf-8") if md.exists() else m.get("error"))
 
 
+def cmd_sim(a) -> int:
+    """模拟盘与回测的交易所端口（v2.15，s03ft/sim.py）。"""
+    sys.path.insert(0, str(HOME))
+    from s03ft import sim
+
+    if a.sub != "list" and not a.exchange:
+        print("需要 --exchange（binance / okx / hyperliquid）", file=sys.stderr)
+        return 2
+    if a.sub == "backtest" and not a.strategy:
+        print("需要 --strategy", file=sys.stderr)
+        return 2
+    return sim.cmd_sim(a, HOME, emit)
+
+
 def cmd_test(a) -> int:
     return subprocess.run([sys.executable, "-m", "pytest", "-q", str(HOME / "tests")], cwd=str(HOME)).returncode
 
@@ -424,6 +475,10 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--json", action="store_true")
     p.set_defaults(fn=cmd_metrics)
     sub.add_parser("test").set_defaults(fn=cmd_test)
+    sys.path.insert(0, str(HOME))
+    from s03ft import sim
+
+    sim.add_parser(sub, cmd_sim)
     return ap
 
 

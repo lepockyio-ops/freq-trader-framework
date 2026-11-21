@@ -1,0 +1,104 @@
+{
+    "strategy": "MyStrategy",
+    "fw_sim_only": true,
+    "$schema": "https://schema.freqtrade.io/schema.json",
+    "max_open_trades": 3,
+    "stake_currency": "USDC",
+    "stake_amount": "unlimited",
+    "tradable_balance_ratio": 0.99,
+    "dry_run": true,
+    "dry_run_wallet": 10000,
+    "initial_state": "running",
+    "trading_mode": "futures",
+    "margin_mode": "isolated",
+    "fw_trade_direction": "both",
+    "fw_pair_directions": {},
+    "fw_asset_classes": {
+        "us_equity": {
+            "pairs": [
+                "XYZ-TSLA/USDC:USDC",
+                "XYZ-NVDA/USDC:USDC",
+                "XYZ-AAPL/USDC:USDC",
+                "XYZ-SP500/USDC:USDC",
+                "XYZ-XYZ100/USDC:USDC"
+            ],
+            "calendar": "nyse",
+            "calendar_params": {
+                "session": "regular",
+                "extra_closed_dates": [],
+                "extra_early_closes": []
+            },
+            "entry_after_open_min": 15,
+            "entry_before_close_min": 15,
+            "flat_before_close_min": 0,
+            "flat_before_gap": false,
+            "flat_before_gap_min": 30,
+            "events_file": "",
+            "events_required": false,
+            "events_max_age_days": 3,
+            "event_before_min": 1440,
+            "event_after_min": 60,
+            "flat_before_event": true,
+            "params": {}
+        }
+    },
+    "liquidation_buffer": 0.05,
+    "cancel_open_orders_on_exit": false,
+    "unfilledtimeout": {
+        "entry": 3,
+        "exit": 10,
+        "exit_timeout_count": 0,
+        "unit": "minutes"
+    },
+    "entry_pricing": {
+        "price_side": "other",
+        "use_order_book": true,
+        "order_book_top": 1,
+        "price_last_balance": 0.0
+    },
+    "exit_pricing": {
+        "price_side": "other",
+        "use_order_book": true,
+        "order_book_top": 1
+    },
+    "order_types": {
+        "entry": "limit",
+        "exit": "market",
+        "emergency_exit": "market",
+        "force_exit": "market",
+        "force_entry": "market",
+        "stoploss": "limit",
+        "stoploss_on_exchange": true,
+        "stoploss_on_exchange_interval": 60
+    },
+    "exchange": {
+        "name": "hyperliquid",
+        "key": "",
+        "secret": "",
+        "pair_whitelist": [
+            "BTC/USDC:USDC",
+            "ETH/USDC:USDC",
+            "SOL/USDC:USDC",
+            "BNB/USDC:USDC",
+            "HYPE/USDC:USDC",
+            "XYZ-TSLA/USDC:USDC",
+            "XYZ-NVDA/USDC:USDC",
+            "XYZ-AAPL/USDC:USDC",
+            "XYZ-SP500/USDC:USDC",
+            "XYZ-XYZ100/USDC:USDC"
+        ],
+        "pair_blacklist": [],
+        "hip3_dexes": [
+            "xyz"
+        ]
+    },
+    "pairlists": [
+        {
+            "method": "StaticPairList"
+        }
+    ],
+    "bot_name": "s03-sim-hyperliquid",
+    "internals": {
+        "process_throttle_secs": 5
+    }
+}
